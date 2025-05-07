@@ -1,6 +1,5 @@
 import httpx
 from models import ComponentRequest
-from typing import List, Dict
 
 BASE_URL = "https://api.osv.dev/v1/query"
 OSV_ECOSYSTEM_MAP = {
@@ -13,7 +12,7 @@ OSV_ECOSYSTEM_MAP = {
 }
 
 
-async def analyze_osv(request: ComponentRequest) -> List[Dict]:
+async def analyze_osv(identifier: str, request: ComponentRequest) -> list[dict]:
     payload = {
         "package": {
             "name": request.name,
@@ -36,7 +35,8 @@ async def analyze_osv(request: ComponentRequest) -> List[Dict]:
             "summary": vuln.get("summary"),
             "details": vuln.get("details"),
             "aliases": vuln.get("aliases", []),
-            "severity": vuln.get("severity", [])
+            "severity": vuln.get("severity", []),
+            "source": "osv"
         })
 
     return result

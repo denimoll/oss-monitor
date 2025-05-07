@@ -21,7 +21,7 @@ async def fetch_cpe_name(name: str, version: str) -> str | None:
         return None
 
 
-async def analyze_nvd(identifier: str, name: str, version: str) -> tuple[str, list[str]]:
+async def analyze_nvd(identifier: str, name: str, version: str) -> tuple[str, list[dict]]:
     cpe_name = identifier or await fetch_cpe_name(name, version)
 
     if not cpe_name:
@@ -36,4 +36,20 @@ async def analyze_nvd(identifier: str, name: str, version: str) -> tuple[str, li
             raise HTTPException(status_code=404, detail=f"NVD error: {response.text}")
 
         data = response.json()
-        return cpe_name, [item["cve"]["id"] for item in data.get("vulnerabilities", []) if "cve" in item and "id" in item["cve"]]
+        vulns = data.get("vulnerabilities", [])
+        result = []
+
+        for vuln in vulns:
+            cve = vuln["cve"]
+            descriptions = cve.get("descriptions", [])
+            summary = next((d["value"] for d in descriptions if d["lang"] == "en"), None)
+            result.append({
+                "id": cve.get("id"),
+                "summary": summary,
+                "details": None,
+                "aliases": [],
+                "severity": cve.get("metrics"),
+                "source": "nvd"
+            })
+
+        return cpe_name, result
