@@ -28,6 +28,6 @@ This will:
 - Mount a volume for persistent SQLite storage
 - Start the API on http://localhost:8000
 ### 📚 API Usage
-Once running, open your browser at:
-👉 http://localhost:8000/docs
+Once running, open your browser at: \
+👉 http://localhost:8000/docs \
 There, you’ll find the full interactive API documentation powered by Swagger UI.
