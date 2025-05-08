@@ -17,6 +17,6 @@ class ComponentRequest(BaseModel):
     type: ComponentType
     name: str
     version: str
-    ecosystem: Ecosystem | None
-    identifier_override: str | None
+    ecosystem: Ecosystem | None = None
+    identifier_override: str | None = None
     

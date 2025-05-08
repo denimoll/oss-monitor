@@ -10,6 +10,7 @@ from db.database import Base, async_session, engine
 from fastapi import Depends, FastAPI, HTTPException
 from models import ComponentRequest
 from services.analyzer import analyze_component
+from services.identifiers import generate_identifier
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -47,6 +48,23 @@ async def get_db():
     async with async_session() as session:
         yield session
 
+
+@app.post(
+    "/generate_identifier",
+    summary="Generate a unique identifier (PURL or CPE)",
+    description=(
+        "Generate a unique identifier (Package URL or CPE) for a given software component."
+        "The identifier can be used to check for known vulnerabilities."
+        "The component must specify whether it is a library or a product."
+    )
+)
+async def generate_id(request: ComponentRequest):
+    try:
+        identifier = await generate_identifier(request)
+        return {"identifier": identifier}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
 
 @app.post(
     "/components",

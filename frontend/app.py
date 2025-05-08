@@ -86,7 +86,11 @@ except Exception as e:
     components = []
 
 for component in components:
-    with st.expander(f"{component['name']}:{component['version']}"):
+    display_name = f"**{component['name']}** — {component['version']}"
+    if component.get("vulnerabilities"):
+        display_name = "⚠️  " + display_name
+
+    with st.expander(display_name):
         st.text(f"Type: {component['type']}")
         st.text(f"Identifier: {component['identifier']}")
         if component.get("ecosystem"):
@@ -96,25 +100,24 @@ for component in components:
             st.text("Vulnerabilities:")
             for vuln in component["vulnerabilities"]:
                 vuln_id = vuln.get("id", "Unknown")
-                source = vuln.get("source", "unknown")
                 if vuln_id.startswith("CVE"):
                     url = f"https://nvd.nist.gov/vuln/detail/{vuln_id}"
                 elif vuln_id.startswith("GHSA"):
                     url = f"https://github.com/advisories/{vuln_id}"
                 else:
                     url = "#"
-                st.markdown(f"- [**{vuln_id}**]({url}) (source: {source})")
+                st.markdown(f"- [**{vuln_id}**]({url})")
 
-        col1, col2 = st.columns(2)
-        with col1:
+        cols = st.columns(6)
+        with cols[0]:
             if st.button("✏️ Edit", key=f"edit_{component['id']}"):
                 st.warning("Edit functionality coming soon.")
-        with col2:
-            if st.button("🗑️ Delete"):
-                if st.confirm("Are you sure you want to delete this component?"):
-                    response = requests.delete(f"{API_URL}/components/{component['id']}")
-                    if response.status_code == 204:
-                        st.success("Component deleted.")
-                        st.experimental_rerun()
-                    else:
-                        st.error("Failed to delete component.")
+        with cols[5]:
+            if st.button("❌ Delete", key=f"delete_{component['id']}"):
+                try:
+                    del_resp = requests.delete(f"{API_URL}/components/{component['id']}")
+                    del_resp.raise_for_status()
+                    st.success("Component deleted.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Delete failed: {e}")
