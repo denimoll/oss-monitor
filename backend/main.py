@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from crud.components import (
@@ -13,13 +14,30 @@ from services.analyzer import analyze_component
 from services.identifiers import generate_identifier
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Configure logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    FastAPI lifespan context to initialize the database schema.
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
 app = FastAPI(lifespan=lifespan)
+
+
+async def get_db():
+    """
+    Dependency to provide an async database session.
+    """
+    async with async_session() as session:
+        yield session
 
 
 @app.post(
@@ -32,6 +50,7 @@ app = FastAPI(lifespan=lifespan)
     )
 )
 async def analyze(request: ComponentRequest):
+    logger.info(f"Analyzing component: {request.name}@{request.version}")
     identifier, vulnerabilities = await analyze_component(request)
 
     return {
@@ -44,11 +63,6 @@ async def analyze(request: ComponentRequest):
     }
 
 
-async def get_db():
-    async with async_session() as session:
-        yield session
-
-
 @app.post(
     "/generate_identifier",
     summary="Generate a unique identifier (PURL or CPE)",
@@ -59,10 +73,12 @@ async def get_db():
     )
 )
 async def generate_id(request: ComponentRequest):
+    logger.info(f"Generating identifier for: {request}")
     try:
         identifier = await generate_identifier(request)
         return {"identifier": identifier}
     except Exception as e:
+        logger.error(f"Error generating identifier: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     
 
@@ -75,6 +91,7 @@ async def generate_id(request: ComponentRequest):
     )
 )
 async def add_component(request: ComponentRequest, db: AsyncSession = Depends(get_db)):
+    logger.info(f"Adding component: {request.name}@{request.version}")
     identifier, vulnerabilities = await analyze_component(request)
 
     component_data = {
@@ -105,6 +122,7 @@ async def add_component(request: ComponentRequest, db: AsyncSession = Depends(ge
     )
 )
 async def list_components(db: AsyncSession = Depends(get_db)):
+    logger.info("Fetching all components")
     components = await get_all_components(db)
 
     return [
@@ -131,12 +149,11 @@ async def list_components(db: AsyncSession = Depends(get_db)):
     )
 )
 async def get_component(component_id: int, db: AsyncSession = Depends(get_db)):
-    """
-    Retrieve detailed information about a specific component by ID, including its vulnerabilities.
-    """
+    logger.info(f"Fetching component with ID {component_id}")
     component = await get_component_by_id(db, component_id)
 
     if not component:
+        logger.warning(f"Component ID {component_id} not found")
         raise HTTPException(status_code=404, detail="Component not found")
 
     return {
@@ -159,10 +176,10 @@ async def get_component(component_id: int, db: AsyncSession = Depends(get_db)):
     )
 )
 async def delete_component_route(component_id: int, db: AsyncSession = Depends(get_db)):
-    """
-    Delete a software component and its associated vulnerability data from the database.
-    """
+    logger.info(f"Attempting to delete component ID {component_id}")
     deleted = await delete_component(db, component_id)
     if not deleted:
+        logger.warning(f"Component ID {component_id} not found for deletion")
         raise HTTPException(status_code=404, detail="Component not found")
+    logger.info(f"Component ID {component_id} deleted")
     return {"detail": f"Component {component_id} deleted successfully"}
