@@ -24,8 +24,8 @@ st.title("Open Source Software Monitor")
 st.header("Add Component")
 
 component_type = st.radio("Component Type", ["library", "product"])
-name = st.text_input("Name")
-version = st.text_input("Version")
+name = st.text_input("Name", key="name")
+version = st.text_input("Version", key="version")
 
 ecosystem = None
 if component_type == "library":
@@ -52,7 +52,7 @@ if st.button("Generate Identifier"):
         st.error(f"Identifier generation failed: {e}")
         st.stop()
 
-# === Analyze + Add Component ===
+# === Analyze Component ===
 if "identifier" in st.session_state:
     identifier = st.text_input("Edit Identifier", value=st.session_state.identifier)
 
@@ -69,33 +69,41 @@ if "identifier" in st.session_state:
 
             response = requests.post(f"{API_URL}/analyze", json=payload)
             response.raise_for_status()
+            st.session_state.analysis_payload = payload
             analysis = response.json()
 
             st.subheader("Vulnerabilities")
             for vuln in analysis["vulnerabilities"]:
-                st.markdown(f"- **{vuln['id']}** (source: {vuln['source']})")
+                st.markdown(f"- **{vuln}**")
 
             st.success("Analysis complete. Click '+' to add this component.")
-
-            if st.button("➕ Add to List"):
-                add_payload = {
-                    "type": component_type,
-                    "name": name,
-                    "version": version,
-                    "identifier": identifier,
-                    "ecosystem": ecosystem,
-                    "vulnerabilities": analysis["vulnerabilities"]
-                }
-                add_payload = {k: v for k, v in add_payload.items() if v is not None}
-                add_response = requests.post(f"{API_URL}/components", json=add_payload)
-                add_response.raise_for_status()
-                logger.info(f"Component added: {name} {version}")
-                st.success("Component added.")
-                st.rerun()
 
         except Exception as e:
             logger.error(f"Analysis failed: {e}")
             st.error(f"Analysis failed: {e}")
+
+# === Show Analysis Result & Add ===
+if "analysis_payload" in st.session_state:
+    cols = st.columns(6)
+    with cols[0]:
+        if st.button("➕ Add"):
+            try:
+                add_response = requests.post(f"{API_URL}/components", json=st.session_state.analysis_payload)
+                add_response.raise_for_status()
+            except requests.HTTPError as e:
+                st.error(f"Add failed: {e.response.status_code} — {e.response.text}")
+                logger.error(f"Add failed: {e.response.status_code} — {e.response.text}")
+                st.stop()
+            logger.info(f"Component added: {name} {version}")
+            st.success("Component added.")
+            for key in ["identifier", "analysis_payload", "name", "version"]:
+                st.session_state.pop(key, None)
+            st.rerun()
+    with cols[5]:
+        if st.button("🧹 Clear"):
+            for key in ["identifier", "analysis_payload", "name", "version"]:
+                st.session_state.pop(key, None)
+            st.rerun()
 
 # === Component List Display ===
 st.header("Your Components")
