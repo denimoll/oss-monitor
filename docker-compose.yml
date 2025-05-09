@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: dockerfile.backend
+    container_name: oss-monitor-backend
+    volumes:
+      - db_data:/app/db_data
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///db_data/app.db
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: dockerfile.frontend
+    container_name: oss-monitor-frontend
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
