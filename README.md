@@ -12,8 +12,8 @@ Platform for control your Open Source Software for vulnerabilities and updates.
   - [OSV.dev](https://osv.dev)
   - [NVD (National Vulnerability Database)](https://nvd.nist.gov)
 - 💾 Store components and their associated vulnerabilities in a local database
+- 🔄 Regularly updated vulnerability information on a schedule (once a day at 3am)
 - 🌐 REST API with interactive Swagger documentation
-- 🖥️ Web UI built with Streamlit for easy, no-code interaction
 
 ## 🚀 Getting Started with Docker Compose
 
