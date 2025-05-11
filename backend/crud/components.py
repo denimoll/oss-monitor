@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 from db.models import Component, Vulnerability
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,7 @@ async def create_component_with_vulns(
         return existing_component
 
     # Create and add new component
+    component_data["last_updated"] = datetime.now()
     component = Component(**component_data)
     db.add(component)
     await db.flush() # Flush to assign primary key

@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 import requests
 import streamlit as st
@@ -127,6 +128,8 @@ for component in components:
         # Component metadata
         st.text(f"Type: {component['type']}")
         st.text(f"Identifier: {component['identifier']}")
+        last_updated = datetime.fromisoformat(component['last_updated']).strftime("%d.%m.%Y %H:%M")
+        st.text(f"Last Updated: {last_updated}")
         if component.get("ecosystem"):
             st.text(f"Ecosystem: {component['ecosystem']}")
 
@@ -144,12 +147,23 @@ for component in components:
                 st.markdown(f"- [**{vuln_id}**]({url})")
 
         # Action buttons
-        cols = st.columns(6)
+        cols = st.columns(3)
         with cols[0]:
-            if st.button("✏️ Edit", key=f"edit_{component['id']}"):
+            if st.button("🔄 Refresh", key=f"refresh_{component['id']}", use_container_width=True):
+                try:
+                    refresh_resp = requests.post(f"{API_URL}/components/{component['id']}/refresh")
+                    refresh_resp.raise_for_status()
+                    logger.info(f"Component ID: {component['id']} refreshed.")
+                    st.success("Component refreshed.")
+                    st.rerun()
+                except Exception as e:
+                    logger.error(f"Refresh failed: {e}")
+                    st.error(f"Refresh failed: {e}")
+        with cols[1]:
+            if st.button("✏️ Edit", key=f"edit_{component['id']}", use_container_width=True, disabled=True):
                 st.warning("Edit functionality coming soon.")
-        with cols[5]:
-            if st.button("❌ Delete", key=f"delete_{component['id']}"):
+        with cols[2]:
+            if st.button("❌ Delete", key=f"delete_{component['id']}", use_container_width=True):
                 try:
                     del_resp = requests.delete(f"{API_URL}/components/{component['id']}")
                     del_resp.raise_for_status()

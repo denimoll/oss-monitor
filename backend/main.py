@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from crud.components import (
     create_component_with_vulns,
@@ -8,10 +9,12 @@ from crud.components import (
     get_component_by_id,
 )
 from db.database import Base, async_session, engine
+from db.models import Vulnerability
 from fastapi import Depends, FastAPI, HTTPException
 from models import ComponentRequest
 from services.analyzer import analyze_component
 from services.identifiers import generate_identifier
+from services.scheduler import start_scheduler
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Configure logging
@@ -28,6 +31,7 @@ async def lifespan(app: FastAPI):
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    start_scheduler()
     yield
 app = FastAPI(lifespan=lifespan)
 
@@ -110,6 +114,7 @@ async def add_component(request: ComponentRequest, db: AsyncSession = Depends(ge
         "version": saved_component.version,
         "type": saved_component.type.value,
         "identifier": saved_component.identifier,
+        "last_updated": saved_component.last_updated.strftime("%d.%m.%Y %H:%M"),
         "vulnerabilities": vulnerabilities
     }
 
@@ -133,6 +138,7 @@ async def list_components(db: AsyncSession = Depends(get_db)):
             "type": c.type.value,
             "ecosystem": c.ecosystem,
             "identifier": c.identifier,
+            "last_updated": c.last_updated,
             "vulnerabilities": [
                 {"id": v.cve_id, "source": v.source} for v in c.vulnerabilities
             ]
@@ -163,10 +169,12 @@ async def get_component(component_id: int, db: AsyncSession = Depends(get_db)):
         "type": component.type.value,
         "ecosystem": component.ecosystem,
         "identifier": component.identifier,
+        "last_updated": component.last_updated,
         "vulnerabilities": [
             {"id": v.cve_id, "source": v.source} for v in component.vulnerabilities
         ]
     }
+
 
 @app.delete(
     "/components/{component_id}",
@@ -183,3 +191,85 @@ async def delete_component_route(component_id: int, db: AsyncSession = Depends(g
         raise HTTPException(status_code=404, detail="Component not found")
     logger.info(f"Component ID {component_id} deleted")
     return {"detail": f"Component {component_id} deleted successfully"}
+
+
+@app.post(
+    "/components/{component_id}/refresh",
+    summary="Refresh vulnerabilities for a specific component",
+    description="Re-analyze the component and update its vulnerability information in the database."
+)
+async def refresh_component(component_id: int, db: AsyncSession = Depends(get_db)):
+    logger.info(f"Attempting to refresh component ID {component_id}")
+    component = await get_component_by_id(db, component_id)
+    if not component:
+        logger.warning(f"Component ID {component_id} not found for refreshing")
+        raise HTTPException(status_code=404, detail="Component not found")
+
+    request_data = ComponentRequest(
+        type=component.type,
+        name=component.name,
+        version=component.version,
+        ecosystem=component.ecosystem,
+        identifier_override=component.identifier
+    )
+
+    identifier, vulnerabilities = await analyze_component(request_data)
+
+    # Delete old vulns
+    component.vulnerabilities.clear()
+    await db.flush()
+
+    # Add new vulns
+    for vuln in vulnerabilities:
+        db.add(Vulnerability(
+            cve_id=vuln["id"],
+            source=vuln["source"],
+            component=component
+        ))
+
+    component.last_updated = datetime.now()
+
+    await db.commit()
+    await db.refresh(component)
+    logger.info(f"Component ID {component_id} refreshed")
+    return await get_component(component_id, db)
+
+
+@app.post(
+    "/components/refresh_all",
+    summary="Refresh all components",
+    description="Re-analyze and update vulnerabilities for all components in the database."
+)
+async def refresh_all_components(db: AsyncSession = Depends(get_db)):
+    logger.info("Attempting to refresh all components")
+    components = await get_all_components(db)
+    updated = []
+
+    for component in components:
+        request_data = ComponentRequest(
+            type=component.type,
+            name=component.name,
+            version=component.version,
+            ecosystem=component.ecosystem,
+            identifier_override=component.identifier
+        )
+
+        identifier, vulnerabilities = await analyze_component(request_data)
+
+        component.vulnerabilities.clear()
+        await db.flush()
+
+        for vuln in vulnerabilities:
+            db.add(Vulnerability(
+                cve_id=vuln["id"],
+                source=vuln["source"],
+                component=component
+            ))
+
+        component.last_updated = datetime.now()
+        updated.append({"id": component.id, "name": component.name})
+        logger.info(f"Component ID {component.id} refreshed")
+
+    await db.commit()
+
+    return {"updated": updated, "count": len(updated)}
