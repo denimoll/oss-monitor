@@ -160,7 +160,7 @@ for component in components:
                     logger.error(f"Refresh failed: {e}")
                     st.error(f"Refresh failed: {e}")
         with cols[1]:
-            if st.button("✏️ Edit", key=f"edit_{component['id']}", use_container_width=True):
+            if st.button("✏️ Edit", key=f"edit_{component['id']}", use_container_width=True, disabled=True):
                 st.warning("Edit functionality coming soon.")
         with cols[2]:
             if st.button("❌ Delete", key=f"delete_{component['id']}", use_container_width=True):
