@@ -1,7 +1,11 @@
-from sqlalchemy import Column, Integer, String, Enum as SqlEnum, ForeignKey
-from sqlalchemy.orm import relationship
-from db.database import Base
 import enum
+from datetime import datetime
+
+from db.database import Base
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Enum as SqlEnum
+from sqlalchemy.orm import relationship
+
 
 class ComponentTypeEnum(str, enum.Enum):
     library = "library"
@@ -16,6 +20,7 @@ class Component(Base):
     type = Column(SqlEnum(ComponentTypeEnum))
     ecosystem = Column(String, nullable=True)
     identifier = Column(String, nullable=True)
+    last_updated = Column(DateTime, default=datetime.now(), nullable=False)
 
     vulnerabilities = relationship("Vulnerability", back_populates="component")
 
