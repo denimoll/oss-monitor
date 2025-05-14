@@ -119,9 +119,10 @@ except Exception as e:
     components = []
 
 for component in components:
-    # Show warning icon if vulnerabilities exist
+    # Show warning icon if vulnerabilities exist and not FP
+    non_fp_vulns = [v for v in component["vulnerabilities"] if not v.get("is_false_positive")]
     display_name = f"**{component['name']}** — {component['version']}"
-    if component.get("vulnerabilities"):
+    if non_fp_vulns:
         display_name = "⚠️  " + display_name
 
     with st.expander(display_name):
@@ -136,15 +137,57 @@ for component in components:
         # Vulnerability list with links
         if component.get("vulnerabilities"):
             st.text("Vulnerabilities:")
+
             for vuln in component["vulnerabilities"]:
-                vuln_id = vuln.get("id", "Unknown")
+                vuln_id = vuln.get("cve_id", "Unknown")
+                is_fp = vuln.get("is_false_positive", False)
+                reason = vuln.get("false_positive_reason", "")
+                severity = vuln.get("severity", "unknown").lower()
+                color = {
+                    "critical": "red",
+                    "high": "orange",
+                    "medium": "yellow",
+                    "low": "green",
+                    "unknown": "gray"
+                }.get(severity.lower(), "gray")
+
                 if vuln_id.startswith("CVE"):
                     url = f"https://nvd.nist.gov/vuln/detail/{vuln_id}"
                 elif vuln_id.startswith("GHSA"):
                     url = f"https://github.com/advisories/{vuln_id}"
                 else:
                     url = "#"
-                st.markdown(f"- [**{vuln_id}**]({url})")
+                
+                label_html = f"""<span style="color:{color}; font-weight:bold;">{vuln_id} ({severity.upper()})</span>"""
+                if not is_fp:
+                    vuln_display = f'<a href="{url}" target="_blank">{label_html}</a>'
+                else:
+                    vuln_display = f"<s>{label_html}</s>"
+
+                cols = st.columns([0.4, 0.1, 0.5])
+                with cols[0]:
+                    st.markdown(vuln_display, unsafe_allow_html=True)
+                with cols[1]:
+                    checkbox_key = f"fp_cb_{component['id']}_{vuln_id}"
+                    new_fp = st.checkbox("FP", value=is_fp, key=checkbox_key)
+                with cols[2]:
+                    reason_key = f"fp_reason_{component['id']}_{vuln_id}"
+                    new_reason = st.text_input("Reason", value=reason, key=reason_key)
+                
+                if new_fp != is_fp:
+                    try:
+                        payload = {
+                            "is_false_positive": new_fp,
+                            "reason": new_reason
+                        }
+                        requests.patch(
+                            f"{API_URL}/vulnerabilities/{vuln.get('id')}/false_positive",
+                            json=payload
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to mark as FP: {e}")
+                
 
         # Action buttons
         cols = st.columns(3)

@@ -52,6 +52,9 @@ async def create_component_with_vulns(
         db.add(Vulnerability(
             cve_id=vuln["id"],
             source=vuln["source"],
+            severity=vuln.get("severity", "unknown"),
+            is_false_positive=False,
+            false_positive_reason=None,
             component=component
         ))
 
