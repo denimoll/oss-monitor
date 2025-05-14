@@ -43,12 +43,20 @@ async def analyze_nvd(identifier: str, name: str, version: str) -> list[dict]:
             # Get English summary if available
             summary = next((d["value"] for d in descriptions if d["lang"] == "en"), None)
             # Append a structured vulnerability dictionary to the result list
+            if cve.get("metrics").get("cvssMetricV31"):
+                severity = cve.get("metrics").get("cvssMetricV31")[0].get("cvssData").get("baseSeverity").lower()
+            elif cve.get("metrics").get("cvssMetricV30"):
+                severity = cve.get("metrics").get("cvssMetricV30")[0].get("cvssData").get("baseSeverity").lower()
+            elif cve.get("metrics").get("cvssMetricV2"):
+                severity = cve.get("metrics").get("cvssMetricV2")[0].get("baseSeverity").lower()
+            else:
+                severity = "unknown"
             result.append({
                 "id": cve.get("id"),
                 "summary": summary,
                 "details": None,
                 "aliases": [],
-                "severity": cve.get("metrics"),
+                "severity": severity,
                 "source": "nvd"
             })
 

@@ -8,9 +8,10 @@ from crud.components import (
     get_all_components,
     get_component_by_id,
 )
+from crud.vulnerabilities import update_false_positive
 from db.database import Base, async_session, engine
 from db.models import Vulnerability
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, HTTPException
 from models import ComponentRequest
 from services.analyzer import analyze_component
 from services.identifiers import generate_identifier
@@ -140,7 +141,14 @@ async def list_components(db: AsyncSession = Depends(get_db)):
             "identifier": c.identifier,
             "last_updated": c.last_updated,
             "vulnerabilities": [
-                {"id": v.cve_id, "source": v.source} for v in c.vulnerabilities
+                {
+                    "id": v.id,
+                    "cve_id": v.cve_id,
+                    "source": v.source,
+                    "severity": v.severity,
+                    "is_false_positive": v.is_false_positive,
+                    "false_positive_reason": v.false_positive_reason
+                } for v in c.vulnerabilities
             ]
         }
         for c in components
@@ -171,7 +179,14 @@ async def get_component(component_id: int, db: AsyncSession = Depends(get_db)):
         "identifier": component.identifier,
         "last_updated": component.last_updated,
         "vulnerabilities": [
-            {"id": v.cve_id, "source": v.source} for v in component.vulnerabilities
+                {
+                    "id": v.id,
+                    "cve_id": v.cve_id,
+                    "source": v.source,
+                    "severity": v.severity,
+                    "is_false_positive": v.is_false_positive,
+                    "false_positive_reason": v.false_positive_reason
+                } for v in component.vulnerabilities
         ]
     }
 
@@ -215,15 +230,17 @@ async def refresh_component(component_id: int, db: AsyncSession = Depends(get_db
 
     identifier, vulnerabilities = await analyze_component(request_data)
 
-    # Delete old vulns
-    component.vulnerabilities.clear()
-    await db.flush()
+    existing_vulns = {(v.cve_id, v.source) for v in component.vulnerabilities}
 
-    # Add new vulns
     for vuln in vulnerabilities:
+        if (vuln["id"], vuln["source"]) in existing_vulns:
+            continue
         db.add(Vulnerability(
             cve_id=vuln["id"],
             source=vuln["source"],
+            severity=vuln.get("severity", "unknown"),
+            is_false_positive=False,
+            false_positive_reason=None,
             component=component
         ))
 
@@ -256,13 +273,17 @@ async def refresh_all_components(db: AsyncSession = Depends(get_db)):
 
         identifier, vulnerabilities = await analyze_component(request_data)
 
-        component.vulnerabilities.clear()
-        await db.flush()
+        existing_vulns = {(v.cve_id, v.source) for v in component.vulnerabilities}
 
         for vuln in vulnerabilities:
+            if (vuln["id"], vuln["source"]) in existing_vulns:
+                continue
             db.add(Vulnerability(
                 cve_id=vuln["id"],
                 source=vuln["source"],
+                severity=vuln.get("severity", "unknown"),
+                is_false_positive=False,
+                false_positive_reason=None,
                 component=component
             ))
 
@@ -273,3 +294,27 @@ async def refresh_all_components(db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     return {"updated": updated, "count": len(updated)}
+
+
+@app.patch(
+    "/vulnerabilities/{vuln_id}/false_positive",
+    summary="Update false positive status",
+    description="Update the false positive status for a specific vulnerability by ID."
+)
+async def update_vulnerability_false_positive(
+    vuln_id: int,
+    data: dict = Body(...),
+    db: AsyncSession = Depends(get_db)
+):
+    is_false_positive = data.get("is_false_positive")
+    reason = data.get("reason", None)
+    logger.info(f"Request to update false_positive for vulnerability {vuln_id} to {is_false_positive}")
+    
+    updated = await update_false_positive(db, vuln_id, is_false_positive, reason)
+    
+    if not updated:
+        logger.warning(f"Vulnerability {vuln_id} not found for false_positive update")
+        raise HTTPException(status_code=404, detail="Vulnerability not found")
+
+    logger.info(f"Vulnerability {vuln_id} false_positive updated to {is_false_positive}, reason: {reason}")
+    return {"detail": f"False positive updated to {is_false_positive}"}
