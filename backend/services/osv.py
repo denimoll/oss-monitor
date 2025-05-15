@@ -56,7 +56,10 @@ async def analyze_osv(identifier: str, request: ComponentRequest) -> list[dict]:
     
     result = []
     for vuln in vulns:
-        severity = vuln.get("database_specific").get("severity", "unknown").lower()
+        try:
+            severity = vuln.get("database_specific").get("severity", "unknown").lower()
+        except AttributeError:
+            severity = "unknown"
         if severity not in ["critical", "high", "medium", "low", "unknown"]:
             severity = "unknown"
         result.append({
