@@ -61,8 +61,8 @@ async def analyze_osv(identifier: str, request: ComponentRequest) -> list[dict]:
             severity = "unknown"
         result.append({
             "id": vuln.get("id"),
-            "summary": vuln.get("summary"),
-            "details": vuln.get("details"),
+            "summary": vuln.get("summary", ""),
+            "details": vuln.get("details", ""),
             "aliases": vuln.get("aliases", []),
             "severity": severity,
             "source": "osv"
