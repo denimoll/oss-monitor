@@ -170,7 +170,7 @@ for component in components:
                 else:
                     vuln_display = f"<s>{label_html}</s>"
 
-                cols = st.columns([0.4, 0.1, 0.5])
+                cols = st.columns([0.3, 0.1, 0.6], vertical_alignment="center")
                 with cols[0]:
                     st.markdown(vuln_display, unsafe_allow_html=True)
                 with cols[1]:
@@ -178,7 +178,8 @@ for component in components:
                     new_fp = st.checkbox("FP", value=is_fp, key=checkbox_key)
                 with cols[2]:
                     reason_key = f"fp_reason_{component['id']}_{vuln_id}"
-                    new_reason = st.text_input("Reason", value=reason, key=reason_key)
+                    new_reason = st.text_input("Reason", value=reason, key=reason_key,
+                                    placeholder="why is fp", label_visibility="collapsed")
                 
                 if new_fp != is_fp:
                     try:
