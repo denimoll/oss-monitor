@@ -162,7 +162,7 @@ for component in components:
                 elif vuln_id.startswith("GHSA"):
                     url = f"https://github.com/advisories/{vuln_id}"
                 else:
-                    url = "#"
+                    url = f"https://deps.dev/advisory/osv/{vuln_id}"
                 
                 label_html = f"""<span style="color:{color}; font-weight:bold;">{vuln_id} ({severity.upper()})</span>"""
                 if not is_fp:
