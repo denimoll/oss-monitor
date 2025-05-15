@@ -104,7 +104,8 @@ async def add_component(request: ComponentRequest, db: AsyncSession = Depends(ge
         "version": request.version,
         "type": request.type,
         "ecosystem": request.ecosystem,
-        "identifier": identifier
+        "identifier": identifier,
+        "notes": request.notes
     }
 
     saved_component = await create_component_with_vulns(db, component_data, vulnerabilities)
@@ -116,6 +117,7 @@ async def add_component(request: ComponentRequest, db: AsyncSession = Depends(ge
         "type": saved_component.type.value,
         "identifier": saved_component.identifier,
         "last_updated": saved_component.last_updated.strftime("%d.%m.%Y %H:%M"),
+        "notes": saved_component.notes,
         "vulnerabilities": vulnerabilities
     }
 
@@ -140,6 +142,7 @@ async def list_components(db: AsyncSession = Depends(get_db)):
             "ecosystem": c.ecosystem,
             "identifier": c.identifier,
             "last_updated": c.last_updated,
+            "notes": c.notes,
             "vulnerabilities": [
                 {
                     "id": v.id,
@@ -178,6 +181,7 @@ async def get_component(component_id: int, db: AsyncSession = Depends(get_db)):
         "ecosystem": component.ecosystem,
         "identifier": component.identifier,
         "last_updated": component.last_updated,
+        "notes": component.notes,
         "vulnerabilities": [
                 {
                     "id": v.id,

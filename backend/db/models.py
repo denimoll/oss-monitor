@@ -28,6 +28,7 @@ class Component(Base):
     ecosystem = Column(String, nullable=True)
     identifier = Column(String, nullable=True)
     last_updated = Column(DateTime, default=datetime.now(), nullable=False)
+    notes = Column(Text, nullable=True)
 
     vulnerabilities = relationship("Vulnerability", back_populates="component")
 

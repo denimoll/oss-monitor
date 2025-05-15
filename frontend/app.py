@@ -33,30 +33,31 @@ if component_type == "library":
     ecosystem = st.selectbox("Ecosystem", ["maven", "npm", "pypi", "go", "nuget", "crates.io"])
 
 # Generate identifier
-if st.button("Generate Identifier"):
-    payload = {
-        "type": component_type,
-        "name": name,
-        "version": version,
-    }
-    if ecosystem:
-        payload["ecosystem"] = ecosystem
+with st.columns(3)[0]:
+    if st.button("Generate Identifier", use_container_width=True):
+        payload = {
+            "type": component_type,
+            "name": name,
+            "version": version,
+        }
+        if ecosystem:
+            payload["ecosystem"] = ecosystem
 
-    try:
-        response = requests.post(f"{API_URL}/generate_identifier", json=payload)
-        response.raise_for_status()
-        identifier = response.json()["identifier"]
-        st.session_state.identifier = identifier
-        logger.info(f"Identifier generated: {identifier}")
-    except Exception as e:
-        logger.error(f"Identifier generation failed: {e}")
-        st.error(f"Identifier generation failed: {e}")
-        st.stop()
+        try:
+            response = requests.post(f"{API_URL}/generate_identifier", json=payload)
+            response.raise_for_status()
+            identifier = response.json()["identifier"]
+            st.session_state.identifier = identifier
+            logger.info(f"Identifier generated: {identifier}")
+        except Exception as e:
+            logger.error(f"Identifier generation failed: {e}")
+            st.error(f"Identifier generation failed: {e}")
+            st.stop()
 
 # === Analyze Component ===
 if "identifier" in st.session_state:
     identifier = st.text_input("Edit Identifier", value=st.session_state.identifier)
-
+    
     if st.button("Analyze"):
         try:
             payload = {
@@ -85,11 +86,14 @@ if "identifier" in st.session_state:
 
 # === Show Analysis Result & Add ===
 if "analysis_payload" in st.session_state:
-    cols = st.columns(6)
+    notes = st.text_area("Notes (optional)")
+    cols = st.columns(3)
     with cols[0]:
-        if st.button("➕ Add"):
+        if st.button("➕ Add", use_container_width=True):
             try:
-                add_response = requests.post(f"{API_URL}/components", json=st.session_state.analysis_payload)
+                payload = st.session_state.analysis_payload
+                payload["notes"] = notes
+                add_response = requests.post(f"{API_URL}/components", json=payload)
                 add_response.raise_for_status()
             except requests.HTTPError as e:
                 st.error(f"Add failed: {e.response.status_code} — {e.response.text}")
@@ -100,8 +104,8 @@ if "analysis_payload" in st.session_state:
             for key in ["identifier", "analysis_payload", "name", "version"]:
                 st.session_state.pop(key, None)
             st.rerun()
-    with cols[5]:
-        if st.button("🧹 Clear"):
+    with cols[2]:
+        if st.button("🧹 Clear", use_container_width=True):
             for key in ["identifier", "analysis_payload", "name", "version"]:
                 st.session_state.pop(key, None)
             st.rerun()
@@ -130,6 +134,8 @@ for component in components:
         st.text(f"Type: {component['type']}")
         st.text(f"Identifier: {component['identifier']}")
         last_updated = datetime.fromisoformat(component['last_updated']).strftime("%d.%m.%Y %H:%M")
+        if component.get("notes"):
+            st.markdown(f"Notes: {component['notes']}")
         st.text(f"Last Updated: {last_updated}")
         if component.get("ecosystem"):
             st.text(f"Ecosystem: {component['ecosystem']}")
@@ -156,7 +162,7 @@ for component in components:
                 elif vuln_id.startswith("GHSA"):
                     url = f"https://github.com/advisories/{vuln_id}"
                 else:
-                    url = "#"
+                    url = f"https://deps.dev/advisory/osv/{vuln_id}"
                 
                 label_html = f"""<span style="color:{color}; font-weight:bold;">{vuln_id} ({severity.upper()})</span>"""
                 if not is_fp:
@@ -164,7 +170,7 @@ for component in components:
                 else:
                     vuln_display = f"<s>{label_html}</s>"
 
-                cols = st.columns([0.4, 0.1, 0.5])
+                cols = st.columns([0.3, 0.1, 0.6], vertical_alignment="center")
                 with cols[0]:
                     st.markdown(vuln_display, unsafe_allow_html=True)
                 with cols[1]:
@@ -172,7 +178,8 @@ for component in components:
                     new_fp = st.checkbox("FP", value=is_fp, key=checkbox_key)
                 with cols[2]:
                     reason_key = f"fp_reason_{component['id']}_{vuln_id}"
-                    new_reason = st.text_input("Reason", value=reason, key=reason_key)
+                    new_reason = st.text_input("Reason", value=reason, key=reason_key,
+                                    placeholder="why is fp", label_visibility="collapsed")
                 
                 if new_fp != is_fp:
                     try:

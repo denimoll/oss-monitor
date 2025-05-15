@@ -19,4 +19,5 @@ class ComponentRequest(BaseModel):
     version: str
     ecosystem: Ecosystem | None = None
     identifier_override: str | None = None
+    notes: str | None = None
     
