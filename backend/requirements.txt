@@ -2,6 +2,6 @@ fastapi==0.116.0
 uvicorn==0.35.0
 httpx==0.28.1
 pydantic==2.11.7
-sqlalchemy==2.0.41
+sqlalchemy==2.0.42
 aiosqlite==0.21.0
 apscheduler==3.11.0
