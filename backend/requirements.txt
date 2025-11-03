@@ -1,7 +1,7 @@
-fastapi==0.118.0
-uvicorn==0.35.0
+fastapi==0.120.4
+uvicorn==0.38.0
 httpx==0.28.1
-sqlalchemy==2.0.43
-pydantic==2.11.9
+sqlalchemy==2.0.44
+pydantic==2.12.3
 aiosqlite==0.21.0
 apscheduler==3.11.0
