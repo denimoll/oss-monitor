@@ -29,8 +29,13 @@ class Component(Base):
     identifier = Column(String, nullable=True)
     last_updated = Column(DateTime, default=datetime.now(), nullable=False)
     notes = Column(Text, nullable=True)
+    tags = Column(Text, nullable=True)  # comma-separated, e.g. "prod,db-server"
 
-    vulnerabilities = relationship("Vulnerability", back_populates="component")
+    vulnerabilities = relationship(
+        "Vulnerability",
+        back_populates="component",
+        cascade="all, delete-orphan",
+    )
 
 class Vulnerability(Base):
     __tablename__ = "vulnerabilities"

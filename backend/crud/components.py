@@ -78,6 +78,29 @@ async def get_component_by_id(db, component_id: int):
     return component
 
 
+async def update_component(db: AsyncSession, component_id: int, notes: str | None, tags: str | None) -> Component | None:
+    """
+    Update notes and tags for a component.
+    """
+    logger.info(f"Updating component ID: {component_id}")
+    result = await db.execute(
+        select(Component).options(selectinload(Component.vulnerabilities)).where(Component.id == component_id)
+    )
+    component = result.scalar_one_or_none()
+    if not component:
+        return None
+
+    component.notes = notes
+    component.tags = tags
+    await db.commit()
+    # Re-query with eager load — db.refresh() does not reload relationships
+    result = await db.execute(
+        select(Component).options(selectinload(Component.vulnerabilities)).where(Component.id == component_id)
+    )
+    logger.info(f"Component ID {component_id} updated")
+    return result.scalar_one_or_none()
+
+
 async def delete_component(db, component_id: int) -> bool:
     """
     Delete a component from the database by its ID.
