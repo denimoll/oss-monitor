@@ -65,7 +65,7 @@ async def generate_identifier(data: ComponentRequest) -> str:
         if not data.ecosystem:
             logger.error("Ecosystem is required for libraries.")
             raise ValueError("Ecosystem is required for libraries.")
-        identifier = f"pkg:{data.ecosystem}/{data.name}@{data.version}"
+        identifier = f"pkg:{data.ecosystem.value}/{data.name}@{data.version}"
         logger.info(f"Generated PURL: {identifier}")
         return identifier
 

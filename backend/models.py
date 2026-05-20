@@ -20,4 +20,8 @@ class ComponentRequest(BaseModel):
     ecosystem: Ecosystem | None = None
     identifier_override: str | None = None
     notes: str | None = None
-    
+    tags: str | None = None  # comma-separated tags, e.g. "prod,db-server"
+
+class ComponentUpdateRequest(BaseModel):
+    notes: str | None = None
+    tags: str | None = None  # comma-separated tags

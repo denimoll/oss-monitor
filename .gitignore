@@ -1,2 +1,5 @@
-tests/
+# Keep old root-level tests/ folder ignored (contains only examples)
+/tests/
 .DS_Store
+__pycache__/
+*.pyc
