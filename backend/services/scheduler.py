@@ -53,6 +53,7 @@ def start_scheduler():
                                     cve_id=vuln["id"],
                                     source=vuln["source"],
                                     severity=vuln.get("severity", "unknown"),
+                                    cvss_score=vuln.get("cvss_score"),
                                     is_false_positive=False,
                                     component=component,
                                 ))
