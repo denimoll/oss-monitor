@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 SCORECARD_API = "https://api.securityscorecards.dev/projects"
 
 
+_GITHUB_REPO_RE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100})")
+
+
 def _parse_github_repo(repo_url: str) -> str | None:
     """
     Extract 'owner/repo' from a GitHub URL.
@@ -21,8 +24,13 @@ def _parse_github_repo(repo_url: str) -> str | None:
       https://github.com/owner/repo
       https://github.com/owner/repo.git
       https://github.com/owner/repo/tree/main
+
+    The URL is capped at 256 characters before matching to prevent ReDoS
+    on pathologically long inputs.
     """
-    match = re.search(r"github\.com[/:]([^/]+/[^/.\s]+)", repo_url)
+    if not repo_url or len(repo_url) > 256:
+        return None
+    match = _GITHUB_REPO_RE.search(repo_url)
     if not match:
         return None
     return match.group(1).removesuffix(".git")

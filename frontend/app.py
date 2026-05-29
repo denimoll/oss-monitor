@@ -582,12 +582,24 @@ elif page == "⚙️ Settings":
                 st.error(f"Save failed: {e}")
     with test_col:
         if st.button("📨 Test webhook", use_container_width=True):
-            if not webhook_url.strip():
+            _url = webhook_url.strip()
+            if not _url:
                 st.warning("Enter a webhook URL first.")
+            elif not (_url.startswith("https://") or _url.startswith("http://")):
+                st.error("Webhook URL must start with http:// or https://")
             else:
-                try:
-                    r = requests.post(webhook_url.strip(),
-                                      json={"text": "✅ OSS Monitor — test notification", "event": "test"}, timeout=5)
-                    st.success(f"Delivered ({r.status_code}).") if r.ok else st.warning(f"Endpoint returned {r.status_code}.")
-                except Exception as e:
-                    st.error(f"Test failed: {e}")
+                # Basic SSRF guard: reject private/loopback ranges
+                from urllib.parse import urlparse
+                _host = urlparse(_url).hostname or ""
+                _blocked = ("localhost", "127.", "0.0.0.0", "::1",
+                            "169.254.", "10.", "172.16.", "192.168.")
+                if any(_host == b or _host.startswith(b) for b in _blocked):
+                    st.error("Webhook URL must point to an external host.")
+                else:
+                    try:
+                        r = requests.post(_url,
+                                          json={"text": "✅ OSS Monitor — test notification", "event": "test"},
+                                          timeout=5)
+                        st.success(f"Delivered ({r.status_code}).") if r.ok else st.warning(f"Endpoint returned {r.status_code}.")
+                    except Exception as e:
+                        st.error(f"Test failed: {e}")
