@@ -12,10 +12,13 @@ logger = logging.getLogger(__name__)
 
 async def get_all_components(db):
     """
-    Retrieve all components from the database, including their vulnerabilities.
+    Retrieve all components from the database, including their vulnerabilities and evidence.
     """
     logger.info("Retrieving all components with their vulnerabilities")
-    result = await db.execute(select(Component).options(selectinload(Component.vulnerabilities)))
+    result = await db.execute(
+        select(Component)
+        .options(selectinload(Component.vulnerabilities), selectinload(Component.evidence))
+    )
     return result.scalars().all()
 
 
@@ -28,11 +31,15 @@ async def create_component_with_vulns(
     If the component already exists (based on name, version, type, and ecosystem), return it instead.
     """
     logger.info(f"Checking for existing component: {component_data['name']}@{component_data['version']}")
-    stmt = select(Component).where(
-        Component.name == component_data["name"],
-        Component.version == component_data["version"],
-        Component.type == component_data["type"],
-        Component.ecosystem == component_data.get("ecosystem")
+    stmt = (
+        select(Component)
+        .options(selectinload(Component.vulnerabilities), selectinload(Component.evidence))
+        .where(
+            Component.name == component_data["name"],
+            Component.version == component_data["version"],
+            Component.type == component_data["type"],
+            Component.ecosystem == component_data.get("ecosystem"),
+        )
     )
     result = await db.execute(stmt)
     existing_component = result.scalar_one_or_none()
@@ -48,54 +55,72 @@ async def create_component_with_vulns(
     await db.flush() # Flush to assign primary key
 
     logger.info(f"Adding {len(vulnerabilities)} vulnerabilities to component")
+    now = datetime.now()
     for vuln in vulnerabilities:
         db.add(Vulnerability(
             cve_id=vuln["id"],
             source=vuln["source"],
             severity=vuln.get("severity", "unknown"),
+            cvss_score=vuln.get("cvss_score"),
             is_false_positive=False,
             false_positive_reason=None,
-            component=component
+            first_seen=now,
+            component=component,
         ))
 
     await db.commit()
-    await db.refresh(component)
+    # Re-query with eager load — db.refresh() does not reload relationships
+    result = await db.execute(
+        select(Component)
+        .options(selectinload(Component.vulnerabilities), selectinload(Component.evidence))
+        .where(Component.id == component.id)
+    )
+    component = result.scalar_one()
     logger.info(f"Component '{component.name}' saved successfully with vulnerabilities")
     return component
 
 
 async def get_component_by_id(db, component_id: int):
     """
-    Retrieve a specific component by its ID, including its vulnerabilities.
+    Retrieve a specific component by its ID, including its vulnerabilities and evidence.
+    Uses populate_existing=True to bypass the session identity map cache.
     """
     logger.info(f"Retrieving component by ID: {component_id}")
     result = await db.execute(
         select(Component)
-        .options(selectinload(Component.vulnerabilities))
+        .options(selectinload(Component.vulnerabilities), selectinload(Component.evidence))
         .where(Component.id == component_id)
+        .execution_options(populate_existing=True)
     )
     component = result.scalar_one_or_none()
     return component
 
 
-async def update_component(db: AsyncSession, component_id: int, notes: str | None, tags: str | None) -> Component | None:
+async def update_component(db: AsyncSession, component_id: int, updates: dict) -> Component | None:
     """
-    Update notes and tags for a component.
+    Update metadata fields for a component.
+    Accepts a dict of fields to update (notes, tags, repo_url, distrib_url, scorecard_*).
     """
     logger.info(f"Updating component ID: {component_id}")
     result = await db.execute(
-        select(Component).options(selectinload(Component.vulnerabilities)).where(Component.id == component_id)
+        select(Component)
+        .options(selectinload(Component.vulnerabilities), selectinload(Component.evidence))
+        .where(Component.id == component_id)
     )
     component = result.scalar_one_or_none()
     if not component:
         return None
 
-    component.notes = notes
-    component.tags = tags
+    for field, value in updates.items():
+        if hasattr(component, field):
+            setattr(component, field, value)
+
     await db.commit()
     # Re-query with eager load — db.refresh() does not reload relationships
     result = await db.execute(
-        select(Component).options(selectinload(Component.vulnerabilities)).where(Component.id == component_id)
+        select(Component)
+        .options(selectinload(Component.vulnerabilities), selectinload(Component.evidence))
+        .where(Component.id == component_id)
     )
     logger.info(f"Component ID {component_id} updated")
     return result.scalar_one_or_none()

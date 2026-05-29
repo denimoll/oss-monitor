@@ -1,12 +1,25 @@
 FROM python:3.13.3-alpine3.20
 
-RUN apk update && apk upgrade && apk add bash
+# Create a dedicated non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
 WORKDIR /app
 
+# Install Python deps first — maximises layer cache reuse
 COPY backend/requirements.txt .
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
+
+# Hand ownership to non-root user (covers future db_data volume mount point)
+RUN chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

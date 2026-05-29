@@ -88,10 +88,13 @@ async def seeded_component(db_session) -> Component:
     )
     db_session.add(vuln)
     await db_session.commit()
-    # Re-query with selectinload so .vulnerabilities is always accessible
+    # Re-query with selectinload so .vulnerabilities/.evidence are always accessible
     from sqlalchemy.future import select
     from sqlalchemy.orm import selectinload
+    from db.models import Evidence
     result = await db_session.execute(
-        select(Component).options(selectinload(Component.vulnerabilities)).where(Component.id == component.id)
+        select(Component)
+        .options(selectinload(Component.vulnerabilities), selectinload(Component.evidence))
+        .where(Component.id == component.id)
     )
     return result.scalar_one()
