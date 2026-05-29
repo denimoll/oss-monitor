@@ -86,7 +86,7 @@ def build_csv(components: list) -> str:
 # ── Navigation ────────────────────────────────────────────────────────────────
 
 page = st.sidebar.radio("Navigation", [
-    "📊 Dashboard", "➕ Add Component", "📋 Components", "📥 Import", "⚙️ Settings",
+    "📋 Components", "📊 Dashboard", "➕ Add Component", "📥 Import", "⚙️ Settings",
 ])
 
 
