@@ -1,10 +1,29 @@
 version: 2
 updates:
+  # Backend Python dependencies
   - package-ecosystem: "pip"
-    directory: "/"
+    directory: "/backend"
     schedule:
       interval: "weekly"
+    target-branch: "develop"
+
+  # Frontend Python dependencies
+  - package-ecosystem: "pip"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    target-branch: "develop"
+
+  # Docker base images
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    target-branch: "develop"
+
+  # GitHub Actions versions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "develop"

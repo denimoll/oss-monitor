@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build:
@@ -9,10 +7,24 @@ services:
     volumes:
       - db_data:/app/db_data
     ports:
+      # Expose backend API locally for direct access / Swagger UI.
+      # Remove or bind to 127.0.0.1 if you don't need external API access:
+      #   - "127.0.0.1:8000:8000"
       - "8000:8000"
     environment:
-      - DATABASE_URL=sqlite:///db_data/app.db
+      - DATABASE_URL=sqlite+aiosqlite:///db_data/app.db
+      # Uncomment and set to enable API key authentication:
+      # - OSS_MONITOR_API_KEY=change-me-to-a-strong-secret
+    networks:
+      - internal
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
 
   frontend:
     build:
@@ -21,8 +33,19 @@ services:
     container_name: oss-monitor-frontend
     ports:
       - "8501:8501"
+    environment:
+      # Must match the backend service name on the internal network
+      - BACKEND_URL=http://backend:8000
+    networks:
+      - internal
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   db_data:
+
+networks:
+  internal:
+    driver: bridge

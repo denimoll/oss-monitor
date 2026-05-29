@@ -80,6 +80,11 @@ app = FastAPI(
 )
 
 
+@app.get("/health", include_in_schema=False, dependencies=[])  # no auth on health
+async def health():
+    return {"status": "ok"}
+
+
 async def get_db():
     async with async_session() as session:
         yield session
