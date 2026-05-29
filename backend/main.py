@@ -480,6 +480,26 @@ async def update_settings(data: SettingsUpdate, db: AsyncSession = Depends(get_d
     return await set_settings(db, data.model_dump())
 
 
+@app.post("/settings/test-webhook", summary="Send a test notification to the configured webhook")
+async def test_webhook(db: AsyncSession = Depends(get_db)):
+    """
+    Reads the webhook_url from stored settings and sends a test payload.
+    The URL never comes from the request body — this prevents SSRF from
+    the frontend passing arbitrary URLs.
+    """
+    settings = await get_all_settings(db)
+    webhook_url = settings.get("webhook_url")
+    if not webhook_url:
+        raise HTTPException(status_code=400, detail="No webhook URL configured in settings")
+
+    from services.webhook import send_webhook
+    payload = {"text": "✅ OSS Monitor — test notification", "event": "test"}
+    ok = await send_webhook(webhook_url, payload)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Webhook delivery failed — check the URL and try again")
+    return {"detail": "Test notification delivered successfully"}
+
+
 # ── Vulnerabilities ───────────────────────────────────────────────────────────
 
 @app.patch("/vulnerabilities/{vuln_id}/false_positive", summary="Update false positive status")

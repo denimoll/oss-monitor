@@ -582,24 +582,18 @@ elif page == "⚙️ Settings":
                 st.error(f"Save failed: {e}")
     with test_col:
         if st.button("📨 Test webhook", use_container_width=True):
-            _url = webhook_url.strip()
-            if not _url:
-                st.warning("Enter a webhook URL first.")
-            elif not (_url.startswith("https://") or _url.startswith("http://")):
-                st.error("Webhook URL must start with http:// or https://")
+            if not webhook_url.strip():
+                st.warning("Save a webhook URL first.")
             else:
-                # Basic SSRF guard: reject private/loopback ranges
-                from urllib.parse import urlparse
-                _host = urlparse(_url).hostname or ""
-                _blocked = ("localhost", "127.", "0.0.0.0", "::1",
-                            "169.254.", "10.", "172.16.", "192.168.")
-                if any(_host == b or _host.startswith(b) for b in _blocked):
-                    st.error("Webhook URL must point to an external host.")
-                else:
-                    try:
-                        r = requests.post(_url,
-                                          json={"text": "✅ OSS Monitor — test notification", "event": "test"},
-                                          timeout=5)
-                        st.success(f"Delivered ({r.status_code}).") if r.ok else st.warning(f"Endpoint returned {r.status_code}.")
-                    except Exception as e:
-                        st.error(f"Test failed: {e}")
+                try:
+                    # The actual HTTP call is made by the backend using the
+                    # URL stored in settings — never from user input directly.
+                    r = api("post", "/settings/test-webhook")
+                    if r.status_code == 200:
+                        st.success("Test notification delivered.")
+                    elif r.status_code == 400:
+                        st.warning("Save settings first, then test.")
+                    else:
+                        st.error(f"Delivery failed: {r.json().get('detail', r.status_code)}")
+                except Exception as e:
+                    st.error(f"Test failed: {e}")
