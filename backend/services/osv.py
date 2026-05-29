@@ -62,13 +62,23 @@ async def analyze_osv(identifier: str, request: ComponentRequest) -> list[dict]:
             severity = "unknown"
         if severity not in ["critical", "high", "medium", "low", "unknown"]:
             severity = "unknown"
+
+        # Try to extract a numeric CVSS baseScore from severity array
+        cvss_score = None
+        for sev_entry in vuln.get("severity", []):
+            if sev_entry.get("type") in ("CVSS_V3", "CVSS_V2"):
+                # score lives in the vector string: CVSS:3.1/AV:.../BS:X.X
+                # OSV doesn't expose baseScore directly, leave as None
+                break
+
         result.append({
             "id": vuln.get("id"),
             "summary": vuln.get("summary", ""),
             "details": vuln.get("details", ""),
             "aliases": vuln.get("aliases", []),
             "severity": severity,
-            "source": "osv"
+            "cvss_score": cvss_score,
+            "source": "osv",
         })
 
     return result

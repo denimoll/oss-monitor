@@ -55,14 +55,17 @@ async def create_component_with_vulns(
     await db.flush() # Flush to assign primary key
 
     logger.info(f"Adding {len(vulnerabilities)} vulnerabilities to component")
+    now = datetime.now()
     for vuln in vulnerabilities:
         db.add(Vulnerability(
             cve_id=vuln["id"],
             source=vuln["source"],
             severity=vuln.get("severity", "unknown"),
+            cvss_score=vuln.get("cvss_score"),
             is_false_positive=False,
             false_positive_reason=None,
-            component=component
+            first_seen=now,
+            component=component,
         ))
 
     await db.commit()

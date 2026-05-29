@@ -70,8 +70,10 @@ class Vulnerability(Base):
     cve_id = Column(String, nullable=False)
     source = Column(String, nullable=False)
     severity = Column(SqlEnum(SeverityLevel), default=SeverityLevel.unknown, nullable=False)
+    cvss_score = Column(Float, nullable=True)        # numeric CVSS base score, e.g. 9.1
     is_false_positive = Column(Boolean, default=False, nullable=False)
     false_positive_reason = Column(Text, nullable=True)
+    first_seen = Column(DateTime, default=datetime.now, nullable=False)
     component_id = Column(Integer, ForeignKey("components.id"))
 
     component = relationship("Component", back_populates="vulnerabilities")

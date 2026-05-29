@@ -1,0 +1,39 @@
+[
+  {
+    "type": "product",
+    "name": "nginx",
+    "version": "1.24.0",
+    "tags": "prod,web",
+    "repo_url": "https://github.com/nginx/nginx",
+    "notes": "Main reverse proxy"
+  },
+  {
+    "type": "product",
+    "name": "postgresql",
+    "version": "15.3",
+    "tags": "prod,db",
+    "notes": "Primary database"
+  },
+  {
+    "type": "product",
+    "name": "redis",
+    "version": "7.2.0",
+    "tags": "prod,cache",
+    "repo_url": "https://github.com/redis/redis"
+  },
+  {
+    "type": "library",
+    "name": "org.springframework:spring-core",
+    "version": "6.0.15",
+    "ecosystem": "maven",
+    "tags": "backend,java",
+    "repo_url": "https://github.com/spring-projects/spring-framework"
+  },
+  {
+    "type": "library",
+    "name": "lodash",
+    "version": "4.17.21",
+    "ecosystem": "npm",
+    "tags": "frontend"
+  }
+]

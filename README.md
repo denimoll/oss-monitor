@@ -113,10 +113,52 @@ pip install -r requirements-test.txt
 pytest
 ```
 
-74 tests covering vulnerability analysis, API endpoints, Scorecard, Quality Gate, Evidence, and Settings.
+82 tests covering vulnerability analysis, API endpoints, Scorecard, Quality Gate, Evidence, Settings, bulk import, and CVSS scoring.
+
+## 📥 Bulk Import
+
+Import multiple components at once from a JSON file via the **Import** page in the UI or `POST /components/import`.
+
+An example file is available at [`examples/import.json`](examples/import.json).
+
+```json
+[
+  {
+    "type": "product",
+    "name": "nginx",
+    "version": "1.24.0",
+    "tags": "prod,web",
+    "repo_url": "https://github.com/nginx/nginx"
+  },
+  {
+    "type": "library",
+    "name": "lodash",
+    "version": "4.17.21",
+    "ecosystem": "npm",
+    "tags": "frontend"
+  }
+]
+```
+
+**Required fields:** `type`, `name`, `version` (+ `ecosystem` for libraries).  
+**Optional:** `tags`, `notes`, `repo_url`, `distrib_url`, `identifier_override`.  
+**Limit:** 200 components per request. Duplicates are skipped automatically.
+
+## 🔐 API Authentication
+
+Disabled by default. To enable, set the `OSS_MONITOR_API_KEY` environment variable:
+
+```bash
+OSS_MONITOR_API_KEY=your-secret-key docker-compose up
+```
+
+Then pass the key via the `X-API-Key` header:
+
+```bash
+curl -H "X-API-Key: your-secret-key" http://localhost:8000/components
+```
 
 ## 🗺️ Roadmap
 
 - GitHub release download + SHA-256 checksum verification
 - SBOM (CycloneDX/SPDX) import and SCA analysis
-- Bulk component import from inventory files

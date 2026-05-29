@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -17,7 +18,7 @@ from crud.settings import get_all_settings, set_settings
 from crud.vulnerabilities import update_false_positive
 from db.database import Base, async_session, engine
 from db.models import SeverityLevel, Vulnerability
-from fastapi import Body, Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from models import ComponentRequest, ComponentUpdateRequest, EvidenceRequest, SettingsUpdate
 from services.analyzer import analyze_component
 from services.identifiers import generate_identifier
@@ -26,14 +27,27 @@ from services.scheduler import start_scheduler
 from services.scorecard import fetch_scorecard
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Configure logging
+# ── Logging ───────────────────────────────────────────────────────────────────
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - [%(levelname)s] [%(name)s] %(message)s"
+    format="%(asctime)s - [%(levelname)s] [%(name)s] %(message)s",
 )
 
-# Migrations: columns added after initial release
+# ── API key auth (optional) ───────────────────────────────────────────────────
+# Set OSS_MONITOR_API_KEY env var to enable. If not set, auth is disabled.
+
+_API_KEY = os.getenv("OSS_MONITOR_API_KEY")
+
+
+async def verify_api_key(x_api_key: str | None = Header(default=None)):
+    if _API_KEY and x_api_key != _API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+# ── DB Migrations ─────────────────────────────────────────────────────────────
+
 _MIGRATIONS = [
     "ALTER TABLE components ADD COLUMN tags TEXT",
     "ALTER TABLE components ADD COLUMN repo_url TEXT",
@@ -41,24 +55,29 @@ _MIGRATIONS = [
     "ALTER TABLE components ADD COLUMN scorecard_score REAL",
     "ALTER TABLE components ADD COLUMN scorecard_data TEXT",
     "ALTER TABLE components ADD COLUMN scorecard_updated DATETIME",
+    "ALTER TABLE vulnerabilities ADD COLUMN cvss_score REAL",
+    "ALTER TABLE vulnerabilities ADD COLUMN first_seen DATETIME",
 ]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize DB schema and run safe column migrations."""
+    """Initialize DB schema and run safe column migrations on startup."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         for migration in _MIGRATIONS:
             try:
                 await conn.execute(text(migration))
             except Exception:
-                pass  # Column already exists on fresh or updated DB
+                pass  # Column already exists — safe to ignore
     start_scheduler()
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 async def get_db():
@@ -67,6 +86,19 @@ async def get_db():
 
 
 # ── Serializers ───────────────────────────────────────────────────────────────
+
+def _serialize_vuln(v) -> dict:
+    return {
+        "id": v.id,
+        "cve_id": v.cve_id,
+        "source": v.source,
+        "severity": v.severity,
+        "cvss_score": v.cvss_score,
+        "is_false_positive": v.is_false_positive,
+        "false_positive_reason": v.false_positive_reason,
+        "first_seen": v.first_seen,
+    }
+
 
 def _serialize_evidence(e) -> dict:
     return {
@@ -80,6 +112,12 @@ def _serialize_evidence(e) -> dict:
 
 
 def _serialize_component(c) -> dict:
+    sc_data = None
+    if c.scorecard_data:
+        try:
+            sc_data = json.loads(c.scorecard_data)
+        except Exception:
+            pass
     return {
         "id": c.id,
         "name": c.name,
@@ -93,17 +131,9 @@ def _serialize_component(c) -> dict:
         "repo_url": c.repo_url,
         "distrib_url": c.distrib_url,
         "scorecard_score": c.scorecard_score,
+        "scorecard_data": sc_data,
         "scorecard_updated": c.scorecard_updated,
-        "vulnerabilities": [
-            {
-                "id": v.id,
-                "cve_id": v.cve_id,
-                "source": v.source,
-                "severity": v.severity,
-                "is_false_positive": v.is_false_positive,
-                "false_positive_reason": v.false_positive_reason,
-            } for v in c.vulnerabilities
-        ],
+        "vulnerabilities": [_serialize_vuln(v) for v in c.vulnerabilities],
         "evidence": [_serialize_evidence(e) for e in c.evidence],
     }
 
@@ -113,14 +143,13 @@ def _serialize_component(c) -> dict:
 @app.get("/dashboard", summary="Get dashboard summary")
 async def get_dashboard(db: AsyncSession = Depends(get_db)):
     components = await get_all_components(db)
+    settings = await get_all_settings(db)
+    sc_threshold = settings.get("scorecard_min_score", 5.0)
 
     severity_counts = {s.value: 0 for s in SeverityLevel}
     components_with_vulns = 0
     scorecard_warnings = 0
     top_vulnerable = []
-
-    settings = await get_all_settings(db)
-    sc_threshold = settings.get("scorecard_min_score", 5.0)
 
     for c in components:
         active_vulns = [v for v in c.vulnerabilities if not v.is_false_positive]
@@ -197,7 +226,6 @@ async def add_component(request: ComponentRequest, db: AsyncSession = Depends(ge
     }
     saved = await create_component_with_vulns(db, component_data, vulnerabilities)
 
-    # Auto-fetch Scorecard if repo_url provided
     if request.repo_url:
         sc = await fetch_scorecard(request.repo_url)
         if sc:
@@ -209,6 +237,55 @@ async def add_component(request: ComponentRequest, db: AsyncSession = Depends(ge
             saved = await get_component_by_id(db, saved.id)
 
     return _serialize_component(saved)
+
+
+@app.post(
+    "/components/import",
+    summary="Bulk import components from a JSON list",
+    description=(
+        "Import multiple components at once from a JSON array. "
+        "Each item is analyzed for vulnerabilities. "
+        "Already-existing components (same name+version+type+ecosystem) are skipped."
+    ),
+)
+async def import_components(
+    items: list[ComponentRequest],
+    db: AsyncSession = Depends(get_db),
+):
+    if not items:
+        raise HTTPException(status_code=400, detail="Empty import list")
+    if len(items) > 200:
+        raise HTTPException(status_code=400, detail="Maximum 200 components per import")
+
+    results = {"imported": [], "skipped": [], "errors": []}
+
+    for req in items:
+        try:
+            identifier, vulnerabilities = await analyze_component(req)
+            component_data = {
+                "name": req.name,
+                "version": req.version,
+                "type": req.type,
+                "ecosystem": req.ecosystem,
+                "identifier": identifier,
+                "notes": req.notes,
+                "tags": req.tags,
+                "repo_url": req.repo_url,
+                "distrib_url": req.distrib_url,
+            }
+            saved = await create_component_with_vulns(db, component_data, vulnerabilities)
+            # create_component_with_vulns returns existing if duplicate
+            key = f"{req.name}@{req.version}"
+            if any(v.component_id == saved.id for v in saved.vulnerabilities) or not saved.vulnerabilities:
+                results["imported"].append({"name": req.name, "version": req.version, "id": saved.id})
+            else:
+                results["skipped"].append(key)
+        except Exception as e:
+            logger.error(f"Import error for {req.name}@{req.version}: {e}")
+            results["errors"].append({"name": req.name, "version": req.version, "error": str(e)})
+
+    logger.info(f"Import complete: {len(results['imported'])} imported, {len(results['skipped'])} skipped, {len(results['errors'])} errors")
+    return results
 
 
 @app.get("/components", summary="List all components")
@@ -284,6 +361,7 @@ async def refresh_scorecard(component_id: int, db: AsyncSession = Depends(get_db
 async def refresh_all_components(db: AsyncSession = Depends(get_db)):
     components = await get_all_components(db)
     updated = []
+    now = datetime.now()
     for component in components:
         request_data = ComponentRequest(
             type=component.type,
@@ -299,9 +377,12 @@ async def refresh_all_components(db: AsyncSession = Depends(get_db)):
                 db.add(Vulnerability(
                     cve_id=vuln["id"], source=vuln["source"],
                     severity=vuln.get("severity", "unknown"),
-                    is_false_positive=False, component=component,
+                    cvss_score=vuln.get("cvss_score"),
+                    is_false_positive=False,
+                    first_seen=now,
+                    component=component,
                 ))
-        component.last_updated = datetime.now()
+        component.last_updated = now
         updated.append({"id": component.id, "name": component.name})
     await db.commit()
     return {"updated": updated, "count": len(updated)}
@@ -322,6 +403,7 @@ async def refresh_component(component_id: int, db: AsyncSession = Depends(get_db
     )
     _, vulnerabilities = await analyze_component(request_data)
     existing_vulns = {(v.cve_id, v.source) for v in component.vulnerabilities}
+    now = datetime.now()
 
     new_vulns = []
     for vuln in vulnerabilities:
@@ -329,14 +411,16 @@ async def refresh_component(component_id: int, db: AsyncSession = Depends(get_db
             db.add(Vulnerability(
                 cve_id=vuln["id"], source=vuln["source"],
                 severity=vuln.get("severity", "unknown"),
-                is_false_positive=False, component=component,
+                cvss_score=vuln.get("cvss_score"),
+                is_false_positive=False,
+                first_seen=now,
+                component=component,
             ))
             new_vulns.append(vuln)
 
-    component.last_updated = datetime.now()
+    component.last_updated = now
     await db.commit()
 
-    # QG: immediate alerts for new critical/high vulns
     if new_vulns:
         settings = await get_all_settings(db)
         webhook_url = settings.get("webhook_url")
@@ -388,16 +472,12 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
 
 @app.put("/settings", summary="Update settings")
 async def update_settings(data: SettingsUpdate, db: AsyncSession = Depends(get_db)):
-    updates = {k: v for k, v in data.model_dump().items()}
-    return await set_settings(db, updates)
+    return await set_settings(db, data.model_dump())
 
 
 # ── Vulnerabilities ───────────────────────────────────────────────────────────
 
-@app.patch(
-    "/vulnerabilities/{vuln_id}/false_positive",
-    summary="Update false positive status",
-)
+@app.patch("/vulnerabilities/{vuln_id}/false_positive", summary="Update false positive status")
 async def update_vulnerability_false_positive(
     vuln_id: int,
     data: dict = Body(...),
