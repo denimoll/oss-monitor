@@ -34,6 +34,7 @@ class ComponentRequest(BaseModel):
     identifier_override: str | None = None
     notes: str | None = None
     tags: str | None = None       # comma-separated tags, e.g. "prod,db-server"
+    owner: str | None = None      # team/person accountable, matched by notification routes
     repo_url: str | None = None   # GitHub/GitLab repo URL
     distrib_url: str | None = None
 
@@ -41,6 +42,7 @@ class ComponentRequest(BaseModel):
 class ComponentUpdateRequest(BaseModel):
     notes: str | None = None
     tags: str | None = None
+    owner: str | None = None
     repo_url: str | None = None
     distrib_url: str | None = None
 
@@ -61,3 +63,14 @@ class SettingsUpdate(BaseModel):
     stale_days_threshold: int = 730
     notify_on_scorecard_fail: bool = True
     notify_on_stale: bool = True
+
+    # CVE-PaaS integration. The API key is env-only (CVEPAAS_API_KEY) and is
+    # deliberately not stored in the settings table.
+    cvepaas_enabled: bool = False
+    cvepaas_url: str | None = None
+    notify_on_kev: bool = True
+    notify_on_priority_critical: bool = False
+    epss_alert_threshold: float = 0.0
+
+    # Per-owner / per-tag webhook routing; see services/routing.py.
+    notification_routes: list[dict] | None = None

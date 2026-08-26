@@ -1,5 +1,6 @@
 import httpx
 from models import ComponentRequest
+from services.versions import find_fixed_version
 import logging
 
 # Configure logger for this module
@@ -71,6 +72,15 @@ async def analyze_osv(identifier: str, request: ComponentRequest) -> list[dict]:
                 # OSV doesn't expose baseScore directly, leave as None
                 break
 
+        # The version that clears this advisory for *our* branch. See
+        # services/versions.py — the lowest fix in the advisory is often the
+        # wrong answer.
+        try:
+            fixed_version = find_fixed_version(vuln, request.name, request.version)
+        except Exception as e:
+            logger.warning(f"Could not resolve fix version for {vuln.get('id')}: {e}")
+            fixed_version = None
+
         result.append({
             "id": vuln.get("id"),
             "summary": vuln.get("summary", ""),
@@ -78,6 +88,7 @@ async def analyze_osv(identifier: str, request: ComponentRequest) -> list[dict]:
             "aliases": vuln.get("aliases", []),
             "severity": severity,
             "cvss_score": cvss_score,
+            "fixed_version": fixed_version,
             "source": "osv",
         })
 

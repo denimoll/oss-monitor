@@ -35,16 +35,91 @@ async def send_webhook(webhook_url: str, payload: dict) -> bool:
 
 
 def build_new_cve_payload(component_name: str, component_version: str,
-                           tags: str | None, cve_id: str, severity: str) -> dict:
+                           tags: str | None, cve_id: str, severity: str,
+                           enrichment: dict | None = None,
+                           owner: str | None = None,
+                           fixed_version: str | None = None) -> dict:
+    """
+    Build a new-CVE alert. When CVE-PaaS enrichment is available the payload
+    additionally carries the exploitation-aware verdict (priority, EPSS, KEV,
+    PoC), which is what an on-call responder actually triages on.
+    """
     tag_str = f" [{tags}]" if tags else ""
     icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(severity, "⚪")
-    return {
+    payload = {
         "text": f"{icon} *New {severity.upper()} vulnerability detected*",
         "event": "new_vulnerability",
         "component": f"{component_name} {component_version}{tag_str}",
         "cve_id": cve_id,
         "severity": severity,
     }
+    if owner:
+        payload["owner"] = owner
+    if enrichment:
+        payload.update(_enrichment_fields(enrichment))
+        payload["text"] += f"\n{_enrichment_line(enrichment)}"
+    if fixed_version:
+        # The single most actionable field in the whole alert.
+        payload["fixed_version"] = fixed_version
+        payload["text"] += f"\nFix: upgrade to *{fixed_version}*"
+    return payload
+
+
+def _enrichment_fields(enrichment: dict) -> dict:
+    """The CVE-PaaS verdict fields carried on any enriched payload."""
+    return {
+        "priority": enrichment.get("priority"),
+        "epss_score": enrichment.get("epss_score"),
+        "is_kev": enrichment.get("is_kev"),
+        "is_poc": enrichment.get("is_poc"),
+        "is_template": enrichment.get("is_template"),
+    }
+
+
+def _enrichment_line(enrichment: dict) -> str:
+    """Human-readable one-liner summarising the CVE-PaaS verdict."""
+    parts = []
+    if enrichment.get("priority"):
+        parts.append(f"priority *{enrichment['priority']}*")
+    epss = enrichment.get("epss_score")
+    if epss is not None:
+        parts.append(f"EPSS {epss:.2%}")
+    if enrichment.get("is_kev"):
+        parts.append("🚨 in KEV")
+    if enrichment.get("is_poc"):
+        parts.append("PoC available")
+    if enrichment.get("is_template"):
+        parts.append("Nuclei template")
+    return "CVE-PaaS: " + ", ".join(parts) if parts else "CVE-PaaS: no verdict"
+
+
+def build_escalation_payload(component_name: str, component_version: str,
+                              tags: str | None, cve_id: str,
+                              before: dict, after: dict,
+                              owner: str | None = None) -> dict:
+    """
+    Alert for a CVE we already track whose exploitation status got worse —
+    e.g. a PoC was published or CISA added it to KEV. This is the signal
+    that a stale "medium" finding just became today's problem.
+    """
+    tag_str = f" [{tags}]" if tags else ""
+    old = before.get("priority") or "unknown"
+    new = after.get("priority") or "unknown"
+    reason = "added to KEV" if after.get("is_kev") and not before.get("is_kev") else \
+             f"priority raised {old} → {new}"
+    payload = {
+        "text": f"⬆️ *Exploitation status escalated* — {cve_id} {reason}",
+        "event": "priority_escalation",
+        "component": f"{component_name} {component_version}{tag_str}",
+        "cve_id": cve_id,
+        "previous_priority": before.get("priority"),
+        "priority": after.get("priority"),
+        "epss_score": after.get("epss_score"),
+        "is_kev": after.get("is_kev"),
+    }
+    if owner:
+        payload["owner"] = owner
+    return payload
 
 
 def build_scorecard_fail_payload(component_name: str, component_version: str,
