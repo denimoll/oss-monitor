@@ -14,6 +14,10 @@ Platform for monitoring third-party software components (OS packages, runtimes, 
 - ✅ Mark vulnerabilities as false positives with reasoning
 - 🔄 Daily automated refresh at 03:00 UTC
 
+### Operations
+- ⚙️ **Background jobs** — full refreshes run outside the request, with live progress and a result you can come back to
+- 🚦 **Rate limiting** — per-client budget on the endpoints that spend the NVD quota
+
 ### Organisation
 - 🏷️ Tag components (e.g. `prod`, `staging`, `db-server`) and filter by tag
 - 👤 Assign an **owner** per component and filter by it
@@ -157,7 +161,7 @@ become noise nobody reads. Set an **owner** on a component and route its alerts 
 Configure it on the **Settings** page or via `PUT /settings` with a `notification_routes` array.
 Alert payloads carry `owner` and `fixed_version` alongside the existing fields.
 
-## 🌐 Vulnerability sources & rate limits
+## 🌐 Vulnerability sources & NVD quota
 
 **NVD** allows 5 requests / 30 s anonymously and 50 / 30 s with a key. A nightly refresh over a few
 dozen products exceeds the anonymous budget, and NVD answers with `403`/`429` rather than an error a
@@ -176,6 +180,71 @@ NVD_API_KEY=your-key docker compose up
 |---|---|---|
 | `NVD_API_KEY` | _(not set)_ | Raises the NVD budget from 5 to 50 requests / 30 s |
 | `NVD_MIN_INTERVAL` | `6.5` (`0.7` with a key) | Seconds between NVD requests; raise it if still throttled |
+
+## ⚙️ Background jobs
+
+Refreshing a whole inventory takes minutes — NVD alone paces requests at 6.5 s apiece without an API
+key — which is far longer than a browser, a proxy or a client library will hold a connection open.
+So the long operations return a job instead of a result:
+
+| Endpoint | Behaviour |
+|---|---|
+| `POST /components/refresh_all` | `202` + job record; `409` if one is already running |
+| `POST /vulnerabilities/enrich` | `202` + job record; `409` if one is already running |
+| `GET /jobs` | Recent jobs, newest first (`?kind=`, `?limit=`) |
+| `GET /jobs/{id}` | One job: status, progress, result or error |
+
+```bash
+JOB=$(curl -sX POST localhost:8000/components/refresh_all | jq -r .id)
+curl -s localhost:8000/jobs/$JOB | jq '{status, processed, total, detail}'
+# { "status": "running", "processed": 12, "total": 40, "detail": "nginx 1.24.0" }
+```
+
+The UI shows a live progress bar on the Components and Dashboard pages and does not block while the
+job runs.
+
+Three properties worth knowing:
+
+- **One job per kind at a time.** Two concurrent full refreshes would double the load on NVD for no
+  benefit, so the second request is refused with `409` naming the job already running.
+- **A failing component does not abandon the run.** Its error is recorded in the job's
+  `result.failed` list and the refresh continues; previously one unreachable source cost you every
+  component after it.
+- **A restart fails interrupted jobs.** Jobs are asyncio tasks in this process, so anything still
+  marked running after a restart died with it. Startup marks those failed — leaving them would both
+  mislead the UI and block that kind forever.
+
+Jobs deliberately do not use a broker. The app is a single uvicorn worker over SQLite; Celery and
+Redis would cost more than they buy here. The consequence is that jobs do not survive a restart and
+do not spread across replicas — if you ever run more than one instance, that is the thing to revisit.
+
+## 🚦 Rate limiting (inbound)
+
+API authentication is off by default, and `/analyze`, `/generate_identifier` and `POST /components`
+all reach NVD and OSV on the caller's behalf. Left unbounded they let anyone who can reach the port
+burn this deployment's NVD budget — and because NVD answers an over-budget client with `403` rather
+than an error, that degrades the nightly refresh into silently returning no vulnerabilities.
+
+Those three endpoints share a per-client budget, so alternating between them does not double the
+allowance. Read endpoints are never limited; the limiter protects the external quota, not the
+database.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OSS_MONITOR_RATE_LIMIT` | `30` | Requests per minute per client. `0` disables it |
+| `TRUSTED_PROXY_COUNT` | `0` | Reverse-proxy hops in front of the service |
+
+Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`; a `429`
+also carries `Retry-After`.
+
+`X-Forwarded-For` is only read when `TRUSTED_PROXY_COUNT` is set, and the client is taken that many
+hops **from the right**. The header is client-controlled: trusting it on a directly-exposed service
+would let anyone reset their own counter on every request, and counting from the right is what makes
+the value unspoofable, since a client can prepend entries but not remove the ones proxies append.
+
+> The counter is in-process. With several uvicorn workers or replicas each keeps its own and the
+> effective limit is N times the configured one. Put the limit on the reverse proxy if you need a
+> cluster-wide budget.
 
 ## 🗄️ Database migrations
 
@@ -309,7 +378,7 @@ pip install -r requirements-test.txt
 pytest
 ```
 
-212 tests covering vulnerability analysis, API endpoints, Scorecard, Quality Gate, Evidence, Settings, bulk import, CVSS scoring, CVE-PaaS prioritization, version comparison and fix resolution, notification routing, NVD rate-limit handling, and schema migrations.
+237 tests covering vulnerability analysis, API endpoints, Scorecard, Quality Gate, Evidence, Settings, bulk import, CVSS scoring, CVE-PaaS prioritization, version comparison and fix resolution, notification routing, NVD rate-limit handling, schema migrations, background jobs, and client rate limiting.
 
 ## 📥 Bulk Import
 
@@ -358,5 +427,5 @@ curl -H "X-API-Key: your-secret-key" http://localhost:8000/components
 
 - GitHub release download + SHA-256 checksum verification
 - SBOM (CycloneDX/SPDX) import and SCA analysis
-- Background job queue for refreshes (long `refresh_all` runs currently hold the HTTP connection)
-- Rate limiting on the unauthenticated `/analyze` and `/generate_identifier` endpoints
+- Background job for bulk import (`POST /components/import` is still synchronous, and 200 components
+  through NVD pacing is far longer than a request should live)

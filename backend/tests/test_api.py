@@ -255,14 +255,25 @@ async def test_refresh_component_not_found(client):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_refresh_all(client, seeded_component):
+async def test_refresh_all_returns_a_job(client, seeded_component):
+    """The refresh runs in the background; the request only queues it."""
     respx.get(NVD_CVE_URL).mock(return_value=Response(200, json={"vulnerabilities": []}))
 
     resp = await client.post("/components/refresh_all")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["count"] == 1
-    assert data["updated"][0]["name"] == "nginx"
+    assert resp.status_code == 202
+
+    job = resp.json()
+    assert job["kind"] == "refresh_all"
+    assert job["status"] in ("pending", "running", "completed")
+
+    from services.jobs import wait_for_job
+    await wait_for_job(job["id"])
+
+    finished = (await client.get(f"/jobs/{job['id']}")).json()
+    assert finished["status"] == "completed"
+    assert finished["result"]["count"] == 1
+    assert finished["result"]["updated"][0]["name"] == "nginx"
+    assert finished["processed"] == finished["total"] == 1
 
 
 # ── GET /dashboard ────────────────────────────────────────────────────────────

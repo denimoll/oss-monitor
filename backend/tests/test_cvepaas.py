@@ -334,8 +334,15 @@ async def test_backfill_endpoint(client, db_session, seeded_component):
         return_value=Response(200, json={"CVE-2023-44487": verdict()})
     )
     response = await client.post("/vulnerabilities/enrich")
-    assert response.status_code == 200
-    assert response.json()["enriched"] == 1
+    assert response.status_code == 202
+
+    job = response.json()
+    from services.jobs import wait_for_job
+    await wait_for_job(job["id"])
+
+    finished = (await client.get(f"/jobs/{job['id']}")).json()
+    assert finished["status"] == "completed"
+    assert finished["result"]["enriched"] == 1
 
 
 async def test_test_cvepaas_requires_configuration(client):
@@ -359,7 +366,14 @@ async def test_dashboard_reports_kev_and_priority_counts(client, db_session, see
     respx.post(f"{CVEPAAS_URL}/v1/cve").mock(
         return_value=Response(200, json={"CVE-2023-44487": verdict(priority="Critical")})
     )
-    await client.post("/vulnerabilities/enrich")
+    from services.jobs import wait_for_job
+    job = (await client.post("/vulnerabilities/enrich")).json()
+    await wait_for_job(job["id"])
+
+    # The job committed through its own session. In production the next request
+    # gets a fresh session and sees the change; here the fixture shares one
+    # session with the request, so its identity map has to be dropped by hand.
+    db_session.expire_all()
 
     data = (await client.get("/dashboard")).json()
     assert data["kev_count"] == 1

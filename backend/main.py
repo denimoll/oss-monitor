@@ -29,6 +29,15 @@ from models import ComponentRequest, ComponentUpdateRequest, EvidenceRequest, Se
 from services.analyzer import analyze_component
 from services.cvepaas import PRIORITY_ORDER, check_health, resolve_base_url
 from services.identifiers import generate_identifier
+from services.jobs import (
+    JobAlreadyRunning,
+    fail_interrupted_jobs,
+    get_job,
+    list_jobs,
+    serialize_job,
+    start_job,
+)
+from services.ratelimit import rate_limit
 from services.qg import evaluate_escalations, evaluate_new_vulns
 from services.scheduler import start_scheduler
 from services.scorecard import fetch_scorecard
@@ -134,6 +143,8 @@ async def lifespan(app: FastAPI):
     """Bring the schema up to date, then start the scheduler."""
     async with engine.begin() as conn:
         await conn.run_sync(_migrate)
+    async with async_session() as db:
+        await fail_interrupted_jobs(db)
     start_scheduler()
     yield
 
@@ -351,7 +362,11 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
 
 # ── Analyze (no storage) ──────────────────────────────────────────────────────
 
-@app.post("/analyze", summary="Analyze a component for vulnerabilities")
+@app.post(
+    "/analyze",
+    summary="Analyze a component for vulnerabilities",
+    dependencies=[Depends(rate_limit("external"))],
+)
 async def analyze(request: ComponentRequest):
     logger.info(f"Analyzing component: {request.name}@{request.version}")
     identifier, vulnerabilities = await analyze_component(request)
@@ -365,7 +380,11 @@ async def analyze(request: ComponentRequest):
     }
 
 
-@app.post("/generate_identifier", summary="Generate a unique identifier (PURL or CPE)")
+@app.post(
+    "/generate_identifier",
+    summary="Generate a unique identifier (PURL or CPE)",
+    dependencies=[Depends(rate_limit("external"))],
+)
 async def generate_id(request: ComponentRequest):
     try:
         identifier = await generate_identifier(request)
@@ -376,7 +395,11 @@ async def generate_id(request: ComponentRequest):
 
 # ── Components ────────────────────────────────────────────────────────────────
 
-@app.post("/components", summary="Add and analyze a component")
+@app.post(
+    "/components",
+    summary="Add and analyze a component",
+    dependencies=[Depends(rate_limit("external"))],
+)
 async def add_component(request: ComponentRequest, db: AsyncSession = Depends(get_db)):
     logger.info(f"Adding component: {request.name}@{request.version}")
     identifier, vulnerabilities = await analyze_component(request)
@@ -532,45 +555,88 @@ async def refresh_scorecard(component_id: int, db: AsyncSession = Depends(get_db
 
 # ── Refresh ───────────────────────────────────────────────────────────────────
 
-@app.post("/components/refresh_all", summary="Refresh all components")
-async def refresh_all_components(db: AsyncSession = Depends(get_db)):
+async def _refresh_all_body(db: AsyncSession, progress) -> dict:
+    """
+    Re-analyze every component. Runs as a background job — with NVD paced at
+    6.5 s per request without an API key this is minutes of work, not seconds.
+    """
     components = await get_all_components(db)
+    progress.set_total(len(components))
+
     updated = []
+    failed = []
     now = datetime.now()
+
     for component in components:
-        request_data = ComponentRequest(
-            type=component.type,
-            name=component.name,
-            version=component.version,
-            ecosystem=component.ecosystem,
-            identifier_override=component.identifier,
-        )
-        _, vulnerabilities = await analyze_component(request_data)
-        existing_vulns = {(v.cve_id, v.source) for v in component.vulnerabilities}
-        for vuln in vulnerabilities:
-            if (vuln["id"], vuln["source"]) not in existing_vulns:
-                db.add(Vulnerability(
-                    cve_id=vuln["id"], source=vuln["source"],
-                    severity=vuln.get("severity", "unknown"),
-                    cvss_score=vuln.get("cvss_score"),
-                    aliases=",".join(vuln.get("aliases") or []) or None,
-                    fixed_version=vuln.get("fixed_version"),
-                    is_false_positive=False,
-                    first_seen=now,
-                    component=component,
-                ))
-        component.last_updated = now
-        updated.append({"id": component.id, "name": component.name})
+        try:
+            request_data = ComponentRequest(
+                type=component.type,
+                name=component.name,
+                version=component.version,
+                ecosystem=component.ecosystem,
+                identifier_override=component.identifier,
+            )
+            _, vulnerabilities = await analyze_component(request_data)
+            existing_vulns = {(v.cve_id, v.source) for v in component.vulnerabilities}
+            for vuln in vulnerabilities:
+                if (vuln["id"], vuln["source"]) not in existing_vulns:
+                    db.add(Vulnerability(
+                        cve_id=vuln["id"], source=vuln["source"],
+                        severity=vuln.get("severity", "unknown"),
+                        cvss_score=vuln.get("cvss_score"),
+                        aliases=",".join(vuln.get("aliases") or []) or None,
+                        fixed_version=vuln.get("fixed_version"),
+                        is_false_positive=False,
+                        first_seen=now,
+                        component=component,
+                    ))
+            component.last_updated = now
+            updated.append({"id": component.id, "name": component.name})
+        except Exception as e:
+            # One unreachable component must not abandon the rest of the run.
+            logger.error(f"Refresh failed for '{component.name}': {e}")
+            failed.append({"id": component.id, "name": component.name, "error": str(e)})
+
+        await progress.advance(detail=f"{component.name} {component.version}")
+
     await db.commit()
 
     settings = await get_all_settings(db)
     enriched = 0
-    if resolve_base_url(settings):
+    base_url = resolve_base_url(settings)
+    if base_url:
         # One CVE-PaaS pass over everything still missing a verdict, rather
         # than one call per component.
-        enriched = len(await enrich_all(db, resolve_base_url(settings)))
+        enriched = len(await enrich_all(db, base_url))
 
-    return {"updated": updated, "count": len(updated), "enriched": enriched}
+    return {
+        "updated": updated,
+        "count": len(updated),
+        "failed": failed,
+        "enriched": enriched,
+    }
+
+
+@app.post(
+    "/components/refresh_all",
+    status_code=202,
+    summary="Start a background refresh of all components",
+    description=(
+        "Returns immediately with a job record; poll `GET /jobs/{id}` for "
+        "progress. Refreshing a full inventory takes minutes, which is longer "
+        "than clients and proxies are willing to hold a connection open. "
+        "Returns 409 if a refresh is already running."
+    ),
+)
+async def refresh_all_components(db: AsyncSession = Depends(get_db)):
+    try:
+        job = await start_job(db, "refresh_all", _refresh_all_body)
+    except JobAlreadyRunning as e:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A refresh is already running (job {e.job.id})",
+        )
+    return serialize_job(job)
 
 
 @app.post("/components/{component_id}/refresh", summary="Refresh a specific component")
@@ -672,11 +738,13 @@ async def enrich_component(
 
 @app.post(
     "/vulnerabilities/enrich",
-    summary="Enrich all stored CVEs with CVE-PaaS priorities",
+    status_code=202,
+    summary="Start a background backfill of CVE-PaaS priorities",
     description=(
         "Backfills priorities for every vulnerability in the database. "
         "Use force=true after a long gap to refresh verdicts that may have "
-        "changed (a PoC published, a KEV listing added)."
+        "changed (a PoC published, a KEV listing added). Returns a job record; "
+        "poll `GET /jobs/{id}` for progress."
     ),
 )
 async def enrich_all_vulnerabilities(force: bool = False, db: AsyncSession = Depends(get_db)):
@@ -687,8 +755,40 @@ async def enrich_all_vulnerabilities(force: bool = False, db: AsyncSession = Dep
             status_code=400,
             detail="CVE-PaaS integration is disabled or has no URL configured",
         )
-    changes = await enrich_all(db, base_url, force=force)
-    return {"enriched": len(changes)}
+
+    async def body(job_db: AsyncSession, progress) -> dict:
+        changes = await enrich_all(job_db, base_url, force=force)
+        await progress.advance(by=len(changes))
+        return {"enriched": len(changes)}
+
+    try:
+        job = await start_job(db, "enrich_all", body)
+    except JobAlreadyRunning as e:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A backfill is already running (job {e.job.id})",
+        )
+    return serialize_job(job)
+
+
+# ── Jobs ──────────────────────────────────────────────────────────────────────
+
+@app.get("/jobs", summary="List recent background jobs")
+async def get_jobs(
+    kind: str | None = None,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    jobs = await list_jobs(db, kind=kind, limit=max(1, min(limit, 100)))
+    return [serialize_job(j) for j in jobs]
+
+
+@app.get("/jobs/{job_id}", summary="Get a background job's status and result")
+async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = await get_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return serialize_job(job)
 
 
 # ── Evidence ──────────────────────────────────────────────────────────────────

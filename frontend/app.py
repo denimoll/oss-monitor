@@ -100,6 +100,68 @@ def sort_vulns(vulns: list) -> list:
     return sorted(vulns, key=key)
 
 
+JOB_STATUS_ICON = {"pending": "⏳", "running": "🔄", "completed": "✅", "failed": "❌"}
+ACTIVE_JOB_STATUSES = ("pending", "running")
+
+
+def fetch_jobs(kind: str | None = None, limit: int = 5) -> list:
+    try:
+        r = api("get", "/jobs", params={"kind": kind, "limit": limit} if kind else {"limit": limit})
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return []
+
+
+def render_job(job: dict) -> None:
+    """One line of job state, with a progress bar while it is running."""
+    icon = JOB_STATUS_ICON.get(job["status"], "•")
+    label = f"{icon} **{job['kind']}** · {job['status']}"
+
+    if job["status"] in ACTIVE_JOB_STATUSES:
+        total = job.get("total")
+        processed = job.get("processed") or 0
+        if total:
+            st.progress(min(processed / total, 1.0),
+                        text=f"{label} — {processed}/{total}"
+                             + (f" · {job['detail']}" if job.get("detail") else ""))
+        else:
+            st.progress(0.0, text=f"{label} — starting…")
+        return
+
+    if job["status"] == "failed":
+        st.error(f"{label} — {job.get('error') or 'no detail'}")
+        return
+
+    result = job.get("result") or {}
+    parts = []
+    if "count" in result:
+        parts.append(f"{result['count']} component(s) refreshed")
+    if result.get("failed"):
+        parts.append(f"{len(result['failed'])} failed")
+    if result.get("enriched"):
+        parts.append(f"{result['enriched']} prioritized")
+    st.success(f"{label}" + (f" — {', '.join(parts)}" if parts else ""))
+
+    if result.get("failed"):
+        with st.expander(f"Components that failed ({len(result['failed'])})"):
+            for item in result["failed"]:
+                st.markdown(f"- **{item['name']}**: {item['error']}")
+
+
+@st.fragment(run_every="2s")
+def job_panel(kind: str | None = None, limit: int = 3) -> None:
+    """
+    Live view of background work. Re-runs on a timer rather than blocking the
+    page, which is the whole reason these operations became jobs.
+    """
+    jobs = fetch_jobs(kind=kind, limit=limit)
+    if not jobs:
+        return
+    for job in jobs:
+        render_job(job)
+
+
 def fetch_components(tag: str | None = None) -> list:
     try:
         r = api("get", "/components", params={"tag": tag} if tag else {})
@@ -157,6 +219,8 @@ if page == "📊 Dashboard":
         data = api("get", "/dashboard").json()
     except Exception as e:
         st.error(f"Failed to load dashboard: {e}"); st.stop()
+
+    job_panel(limit=3)
 
     sc = data["severity_counts"]
     col1,col2,col3,col4,col5,col6 = st.columns(6)
@@ -317,6 +381,24 @@ elif page == "📋 Components":
     all_components = fetch_components()
 
     # ── Search + filter ───────────────────────────────────────────────────────
+    refresh_col, _ = st.columns([1, 3])
+    with refresh_col:
+        if st.button("🔄 Refresh all", use_container_width=True,
+                     help="Re-query NVD and OSV for every component. Runs in the "
+                          "background — you can leave this page."):
+            try:
+                r = api("post", "/components/refresh_all")
+                if r.status_code == 202:
+                    st.toast("Refresh started.")
+                elif r.status_code == 409:
+                    st.warning(r.json()["detail"])
+                else:
+                    st.error(f"Could not start refresh: {r.text}")
+            except Exception as e:
+                st.error(f"Could not start refresh: {e}")
+
+    job_panel(kind="refresh_all", limit=1)
+
     filter_col, tag_col, owner_col, export_col = st.columns([2, 1, 1, 1])
     with filter_col:
         search = st.text_input("🔍 Search by name", placeholder="nginx, spring…", label_visibility="collapsed")
@@ -806,16 +888,20 @@ elif page == "⚙️ Settings":
                 st.error(f"Test failed: {e}")
     with cp_fill_col:
         if st.button("🎯 Backfill priorities", use_container_width=True, disabled=not cvepaas_enabled,
-                     help="Look up every stored CVE that has no priority yet. Save settings first."):
-            with st.spinner("Querying CVE-PaaS — this can take a while for a large inventory…"):
-                try:
-                    r = api("post", "/vulnerabilities/enrich")
-                    if r.status_code == 200:
-                        st.success(f"{r.json()['enriched']} CVE(s) prioritized.")
-                    else:
-                        st.error(r.json().get("detail", f"HTTP {r.status_code}"))
-                except Exception as e:
-                    st.error(f"Backfill failed: {e}")
+                     help="Look up every stored CVE that has no priority yet. Runs in the "
+                          "background. Save settings first."):
+            try:
+                r = api("post", "/vulnerabilities/enrich")
+                if r.status_code == 202:
+                    st.toast("Backfill started.")
+                elif r.status_code == 409:
+                    st.warning(r.json()["detail"])
+                else:
+                    st.error(r.json().get("detail", f"HTTP {r.status_code}"))
+            except Exception as e:
+                st.error(f"Backfill failed: {e}")
+
+    job_panel(kind="enrich_all", limit=1)
 
     st.divider()
     st.subheader("🌐 Vulnerability Sources")

@@ -7,8 +7,11 @@ the whole point is what happens to a database that already exists.
 """
 
 import sqlite3
+from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -18,6 +21,20 @@ import main
 @pytest.fixture
 def db_path(tmp_path):
     return tmp_path / "app.db"
+
+
+def head_revision() -> str:
+    """
+    The latest revision, read from the migration scripts.
+
+    Deliberately not a literal: hard-coding it would mean every new migration
+    breaks these tests for no reason, and the assertions are about the
+    *mechanism* landing a database on head, not about which revision head is.
+    """
+    root = Path(main.__file__).resolve().parent
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    return ScriptDirectory.from_config(config).get_current_head()
 
 
 async def _migrate(db_path):
@@ -88,8 +105,8 @@ async def test_empty_database_gets_the_full_schema(db_path):
     await _migrate(db_path)
 
     assert _tables(db_path) >= {"components", "vulnerabilities", "evidence",
-                                "settings", "alembic_version"}
-    assert _revision(db_path) == "0001_baseline"
+                                "settings", "jobs", "alembic_version"}
+    assert _revision(db_path) == head_revision()
 
 
 async def test_fresh_schema_has_every_current_column(db_path):
@@ -140,7 +157,7 @@ async def test_legacy_database_is_stamped_not_replayed(db_path):
     """
     _write_legacy_db(db_path)
     await _migrate(db_path)
-    assert _revision(db_path) == "0001_baseline"
+    assert _revision(db_path) == head_revision()
 
 
 # ── Idempotence ───────────────────────────────────────────────────────────────
@@ -148,7 +165,7 @@ async def test_legacy_database_is_stamped_not_replayed(db_path):
 async def test_migrating_twice_is_a_no_op(db_path):
     await _migrate(db_path)
     await _migrate(db_path)
-    assert _revision(db_path) == "0001_baseline"
+    assert _revision(db_path) == head_revision()
 
 
 async def test_migrating_a_legacy_database_twice_is_a_no_op(db_path):
@@ -156,7 +173,7 @@ async def test_migrating_a_legacy_database_twice_is_a_no_op(db_path):
     await _migrate(db_path)
     await _migrate(db_path)
 
-    assert _revision(db_path) == "0001_baseline"
+    assert _revision(db_path) == head_revision()
     connection = sqlite3.connect(db_path)
     try:
         assert connection.execute("SELECT COUNT(*) FROM components").fetchone()[0] == 1
@@ -172,7 +189,7 @@ async def test_migrated_schema_matches_the_orm_models(db_path):
     to db/models.py with no matching migration. The app would then work in
     tests (which call create_all) and break in production.
     """
-    from db.models import Component, Evidence, Settings, Vulnerability
+    from db.models import Component, Evidence, Job, Settings, Vulnerability
 
     await _migrate(db_path)
 
@@ -182,14 +199,15 @@ async def test_migrated_schema_matches_the_orm_models(db_path):
             reflected = await conn.run_sync(
                 lambda sync_conn: {
                     table: {c["name"] for c in inspect(sync_conn).get_columns(table)}
-                    for table in ("components", "vulnerabilities", "evidence", "settings")
+                    for table in ("components", "vulnerabilities", "evidence",
+                                  "settings", "jobs")
                 }
             )
     finally:
         await engine.dispose()
 
     for model, table in ((Component, "components"), (Vulnerability, "vulnerabilities"),
-                         (Evidence, "evidence"), (Settings, "settings")):
+                         (Evidence, "evidence"), (Settings, "settings"), (Job, "jobs")):
         expected = {c.name for c in model.__table__.columns}
         missing = expected - reflected[table]
         assert not missing, f"{table} is missing migrated column(s): {sorted(missing)}"

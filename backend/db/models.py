@@ -110,6 +110,36 @@ class Evidence(Base):
     component = relationship("Component", back_populates="evidence")
 
 
+class JobStatus(str, enum.Enum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
+class Job(Base):
+    """
+    A long-running operation executed outside its triggering request.
+
+    Persisted rather than kept in memory so progress survives a page reload and
+    a restart can tell the caller what happened, instead of leaving a request
+    that was killed mid-refresh looking like it never ran.
+    """
+    __tablename__ = "jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String, nullable=False, index=True)
+    status = Column(SqlEnum(JobStatus), nullable=False, default=JobStatus.pending)
+    processed = Column(Integer, nullable=False, default=0)
+    total = Column(Integer, nullable=True)      # NULL while the size is unknown
+    detail = Column(String, nullable=True)      # what it is working on right now
+    result = Column(Text, nullable=True)        # JSON payload on success
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
 class Settings(Base):
     """Key-value store for application settings (webhook, QG thresholds, etc.)"""
     __tablename__ = "settings"

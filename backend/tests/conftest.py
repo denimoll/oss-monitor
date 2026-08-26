@@ -6,6 +6,8 @@ Database strategy:
   - The FastAPI lifespan is bypassed so the scheduler never starts during tests.
   - All external HTTP calls (NVD / OSV) are mocked via respx.
   - NVD request pacing is disabled (NVD_MIN_INTERVAL=0).
+  - Background jobs run against the same in-memory database.
+  - Rate-limit counters are cleared between tests.
 """
 
 import os
@@ -46,8 +48,15 @@ async def db_engine():
 @pytest_asyncio.fixture
 async def db_session(db_engine):
     Session = sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with Session() as session:
-        yield session
+    # Background jobs open their own session; point them at the test engine so
+    # they see the same in-memory database the fixtures populate.
+    from services import jobs as jobs_service
+    jobs_service.set_session_factory(Session)
+    try:
+        async with Session() as session:
+            yield session
+    finally:
+        jobs_service.set_session_factory(jobs_service.async_session)
 
 
 # ── FastAPI test client wired to the test DB ──────────────────────────────────
@@ -68,6 +77,15 @@ async def client(db_session):
         yield ac
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """A limiter counting across tests would fail whichever test ran 31st."""
+    from services import ratelimit
+    ratelimit.reset()
+    yield
+    ratelimit.reset()
 
 
 # ── Pre-seeded component helper ───────────────────────────────────────────────

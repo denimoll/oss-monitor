@@ -27,6 +27,14 @@ services:
       # a few dozen products exceeds. A free key raises it to 50 / 30 s:
       # https://nvd.nist.gov/developers/request-an-api-key
       - NVD_API_KEY=${NVD_API_KEY:-}
+      # ── Rate limiting ───────────────────────────────────────────────────
+      # Requests per minute per client for the endpoints that call NVD/OSV
+      # (/analyze, /generate_identifier, POST /components). 0 disables it.
+      - OSS_MONITOR_RATE_LIMIT=${OSS_MONITOR_RATE_LIMIT:-30}
+      # Set to the number of reverse-proxy hops in front of this service to
+      # read the real client IP from X-Forwarded-For. Leave at 0 when the
+      # service is reachable directly — the header is client-controlled.
+      - TRUSTED_PROXY_COUNT=${TRUSTED_PROXY_COUNT:-0}
     networks:
       - internal
     restart: unless-stopped
