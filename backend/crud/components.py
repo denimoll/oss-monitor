@@ -62,6 +62,8 @@ async def create_component_with_vulns(
             source=vuln["source"],
             severity=vuln.get("severity", "unknown"),
             cvss_score=vuln.get("cvss_score"),
+            aliases=",".join(vuln.get("aliases") or []) or None,
+            fixed_version=vuln.get("fixed_version"),
             is_false_positive=False,
             false_positive_reason=None,
             first_seen=now,

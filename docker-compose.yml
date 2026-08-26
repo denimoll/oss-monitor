@@ -15,6 +15,18 @@ services:
       - DATABASE_URL=sqlite+aiosqlite:///db_data/app.db
       # Uncomment and set to enable API key authentication:
       # - OSS_MONITOR_API_KEY=change-me-to-a-strong-secret
+      # ── CVE-PaaS prioritization (optional) ──────────────────────────────
+      # Default URL used when no URL is set on the Settings page.
+      # Enable the integration itself in Settings (or via PUT /settings).
+      - CVEPAAS_URL=${CVEPAAS_URL:-http://cve-paas:8000}
+      # Only needed when the CVE-PaaS instance runs with CVE_PAAS_API_KEY set.
+      # The key is env-only and never written to the settings database.
+      - CVEPAAS_API_KEY=${CVEPAAS_API_KEY:-}
+      # ── NVD ─────────────────────────────────────────────────────────────
+      # Anonymous clients get 5 requests / 30 s, which a nightly refresh over
+      # a few dozen products exceeds. A free key raises it to 50 / 30 s:
+      # https://nvd.nist.gov/developers/request-an-api-key
+      - NVD_API_KEY=${NVD_API_KEY:-}
     networks:
       - internal
     restart: unless-stopped
@@ -43,8 +55,33 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── CVE-PaaS: exploitation-aware CVE prioritization ─────────────────────────
+  # https://github.com/denimoll/CVE-PaaS
+  # Opt-in — it needs a ProjectDiscovery API key, so it only starts with:
+  #   PDCP_API_KEY=<your_key> docker compose --profile cvepaas up
+  # (vulnx will not resolve anything without it)
+  cve-paas:
+    image: ghcr.io/denimoll/cve-paas:latest
+    container_name: oss-monitor-cve-paas
+    profiles: ["cvepaas"]
+    environment:
+      - PDCP_API_KEY=${PDCP_API_KEY:-}
+      - DB_PATH=/data/cve_cache.db
+      # A generous TTL matters more than any other setting: only uncached CVEs
+      # reach vulnx, so a daily refresh over a stable inventory is nearly free.
+      - CACHE_TTL_HOURS=${CVEPAAS_CACHE_TTL_HOURS:-168}
+      - CVE_PAAS_API_KEY=${CVEPAAS_API_KEY:-}
+    volumes:
+      # Mount a directory, not the file — SQLite runs in WAL mode and keeps
+      # two sidecar files next to the database.
+      - cve_paas_data:/data
+    networks:
+      - internal
+    restart: unless-stopped
+
 volumes:
   db_data:
+  cve_paas_data:
 
 networks:
   internal:

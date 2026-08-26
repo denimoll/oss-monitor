@@ -41,6 +41,7 @@ class Component(Base):
     last_updated = Column(DateTime, default=datetime.now(), nullable=False)
     notes = Column(Text, nullable=True)
     tags = Column(Text, nullable=True)          # comma-separated, e.g. "prod,db-server"
+    owner = Column(String, nullable=True)       # team/person accountable for this component
 
     # Source & distribution metadata
     repo_url = Column(String, nullable=True)    # GitHub/GitLab repo URL
@@ -74,7 +75,23 @@ class Vulnerability(Base):
     is_false_positive = Column(Boolean, default=False, nullable=False)
     false_positive_reason = Column(Text, nullable=True)
     first_seen = Column(DateTime, default=datetime.now, nullable=False)
+    # Comma-separated alternative IDs from OSV (e.g. "CVE-2021-44228,GHSA-...").
+    # OSV keys advisories by GHSA/PYSEC/GO ID, so the CVE is only reachable here.
+    aliases = Column(Text, nullable=True)
+    # The version that clears this finding for our branch, when the advisory
+    # states one. NULL means "no fix published" or "not derivable".
+    fixed_version = Column(String, nullable=True)
     component_id = Column(Integer, ForeignKey("components.id"))
+
+    # CVE-PaaS enrichment — exploitation-aware prioritisation.
+    # See services/cvepaas.py; all nullable because enrichment is optional.
+    priority = Column(String, nullable=True)          # Critical/High/Medium/Low/Info/Undefined
+    epss_score = Column(Float, nullable=True)         # 0.0-1.0 exploit prediction
+    is_kev = Column(Boolean, nullable=True)           # listed in CISA or VulnCheck KEV
+    is_poc = Column(Boolean, nullable=True)           # public proof-of-concept exists
+    is_template = Column(Boolean, nullable=True)      # Nuclei template exists
+    cvepaas_data = Column(Text, nullable=True)        # JSON blob of the full verdict
+    priority_updated = Column(DateTime, nullable=True)
 
     component = relationship("Component", back_populates="vulnerabilities")
 

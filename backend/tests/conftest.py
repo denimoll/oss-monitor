@@ -5,7 +5,14 @@ Database strategy:
   - Each test gets a fresh in-memory SQLite database (file::memory:?cache=shared).
   - The FastAPI lifespan is bypassed so the scheduler never starts during tests.
   - All external HTTP calls (NVD / OSV) are mocked via respx.
+  - NVD request pacing is disabled (NVD_MIN_INTERVAL=0).
 """
+
+import os
+
+# NVD is mocked throughout the suite, so its real-world rate-limit pacing would
+# only make the tests slow. Must be set before services.nvd is imported.
+os.environ.setdefault("NVD_MIN_INTERVAL", "0")
 
 import pytest
 import pytest_asyncio

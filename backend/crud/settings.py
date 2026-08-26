@@ -15,6 +15,14 @@ DEFAULTS = {
     "stale_days_threshold": "730",
     "notify_on_scorecard_fail": "true",
     "notify_on_stale": "true",
+    # ── CVE-PaaS integration ──────────────────────────────────────────────
+    "cvepaas_enabled": "false",
+    "cvepaas_url": None,
+    "notify_on_kev": "true",
+    "notify_on_priority_critical": "false",
+    "epss_alert_threshold": "0.0",
+    # JSON list — see services/routing.py
+    "notification_routes": None,
 }
 
 
@@ -30,7 +38,13 @@ async def set_settings(db: AsyncSession, updates: dict) -> dict:
     for key, value in updates.items():
         result = await db.execute(select(Settings).where(Settings.key == key))
         row = result.scalar_one_or_none()
-        str_value = str(value) if value is not None else None
+        # Structured settings (routes) round-trip as JSON; scalars as str().
+        if value is None:
+            str_value = None
+        elif isinstance(value, (list, dict)):
+            str_value = json.dumps(value)
+        else:
+            str_value = str(value)
         if row:
             row.value = str_value
         else:
@@ -43,9 +57,14 @@ async def set_settings(db: AsyncSession, updates: dict) -> dict:
 def _cast_settings(raw: dict) -> dict:
     """Cast string values to proper Python types."""
     casted = {}
-    bool_keys = {"notify_on_critical", "notify_on_high", "notify_on_scorecard_fail", "notify_on_stale"}
-    float_keys = {"scorecard_min_score"}
+    bool_keys = {
+        "notify_on_critical", "notify_on_high", "notify_on_scorecard_fail",
+        "notify_on_stale", "cvepaas_enabled", "notify_on_kev",
+        "notify_on_priority_critical",
+    }
+    float_keys = {"scorecard_min_score", "epss_alert_threshold"}
     int_keys = {"stale_days_threshold"}
+    json_keys = {"notification_routes"}
 
     for k, v in raw.items():
         if v is None:
@@ -56,6 +75,12 @@ def _cast_settings(raw: dict) -> dict:
             casted[k] = float(v)
         elif k in int_keys:
             casted[k] = int(v)
+        elif k in json_keys:
+            try:
+                casted[k] = json.loads(v) if isinstance(v, str) else v
+            except (ValueError, TypeError):
+                logger.error(f"Setting {k!r} holds invalid JSON — returning empty")
+                casted[k] = []
         else:
             casted[k] = v
     return casted

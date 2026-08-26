@@ -2,12 +2,14 @@ import csv
 import io
 import json
 import logging
+import os
 from datetime import datetime
 
 import requests
 import streamlit as st
 
-API_URL = "http://backend:8000"
+# docker-compose sets BACKEND_URL; the literal is the compose service default.
+API_URL = os.getenv("BACKEND_URL", "http://backend:8000").rstrip("/")
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] [%(name)s] %(message)s")
@@ -22,6 +24,13 @@ for key in ["identifier", "analysis_payload"]:
 
 SEVERITY_COLOR = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢", "unknown": "⚪"}
 SEVERITY_HEX   = {"critical": "red", "high": "orange", "medium": "#cccc00", "low": "green", "unknown": "gray"}
+
+# CVE-PaaS priority ladder — exploitation-aware, ranks above CVSS severity in the UI
+PRIORITY_COLOR = {"Critical": "🔥", "High": "🟠", "Medium": "🟡", "Low": "🟢",
+                  "Info": "⚪", "Undefined": "❔"}
+PRIORITY_HEX   = {"Critical": "#c0392b", "High": "orange", "Medium": "#cccc00",
+                  "Low": "green", "Info": "gray", "Undefined": "gray"}
+PRIORITY_RANK  = {p: i for i, p in enumerate(["Critical", "High", "Medium", "Low", "Info", "Undefined"])}
 
 EVIDENCE_ICONS  = {"analyst_report": "📄", "incident_link": "🔗", "virustotal": "🛡️",
                    "cve_discussion": "💬", "audit_report": "🔍", "other": "📎"}
@@ -51,6 +60,46 @@ def scorecard_badge(score) -> str:
     color = "green" if score >= 7 else ("orange" if score >= 5 else "red")
     return f'<span style="background:{color};color:white;padding:2px 7px;border-radius:4px;font-size:0.85em;font-weight:bold;">SC {score}/10</span>'
 
+def priority_badge(vuln: dict) -> str:
+    """
+    Render the CVE-PaaS verdict: priority chip plus the exploitation signals
+    that drive it (KEV listing, public PoC, Nuclei template, EPSS score).
+    Returns an empty string when the vulnerability was never enriched.
+    """
+    priority = vuln.get("priority")
+    if not priority:
+        return ""
+    color = PRIORITY_HEX.get(priority, "gray")
+    chips = [f'<span style="background:{color};color:white;padding:1px 6px;border-radius:4px;'
+             f'font-size:0.8em;font-weight:bold;">{priority}</span>']
+    if vuln.get("is_kev"):
+        chips.append('<span style="color:#c0392b;font-weight:bold;font-size:0.8em;">🚨 KEV</span>')
+    if vuln.get("is_poc"):
+        chips.append('<span style="color:gray;font-size:0.8em;">PoC</span>')
+    if vuln.get("is_template"):
+        chips.append('<span style="color:gray;font-size:0.8em;">Nuclei</span>')
+    epss = vuln.get("epss_score")
+    if epss is not None:
+        chips.append(f'<span style="color:gray;font-size:0.8em;">EPSS {epss:.1%}</span>')
+    return " " + " ".join(chips)
+
+
+def sort_vulns(vulns: list) -> list:
+    """
+    Order by CVE-PaaS priority when available, CVSS severity otherwise, with
+    false positives last. Exploited CVEs belong at the top of the list.
+    """
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "unknown": 4}
+    def key(v):
+        return (
+            bool(v.get("is_false_positive")),
+            PRIORITY_RANK.get(v.get("priority"), 98) if v.get("priority") else 99,
+            sev_rank.get((v.get("severity") or "unknown").lower(), 4),
+            v.get("cve_id") or "",
+        )
+    return sorted(vulns, key=key)
+
+
 def fetch_components(tag: str | None = None) -> list:
     try:
         r = api("get", "/components", params={"tag": tag} if tag else {})
@@ -65,6 +114,8 @@ def build_csv(components: list) -> str:
     w = csv.writer(buf)
     w.writerow(["name", "version", "type", "ecosystem", "identifier", "tags",
                 "scorecard_score", "cve_count", "critical", "high", "medium", "low",
+                "kev", "poc", "priority_critical", "max_epss",
+                "owner", "recommended_version", "clears",
                 "last_updated", "repo_url", "notes"])
     for c in components:
         av = [v for v in c["vulnerabilities"] if not v.get("is_false_positive")]
@@ -77,6 +128,13 @@ def build_csv(components: list) -> str:
             sum(1 for v in av if v["severity"] == "high"),
             sum(1 for v in av if v["severity"] == "medium"),
             sum(1 for v in av if v["severity"] == "low"),
+            sum(1 for v in av if v.get("is_kev")),
+            sum(1 for v in av if v.get("is_poc")),
+            sum(1 for v in av if v.get("priority") == "Critical"),
+            max((v.get("epss_score") or 0) for v in av) if av else "",
+            c.get("owner") or "",
+            (c.get("remediation") or {}).get("recommended_version") or "",
+            (c.get("remediation") or {}).get("clears") or "",
             fmt_dt(c.get("last_updated")),
             c.get("repo_url") or "",
             (c.get("notes") or "").replace("\n", " "),
@@ -107,7 +165,13 @@ if page == "📊 Dashboard":
     col3.metric("🔴 Critical",          sc.get("critical", 0))
     col4.metric("🟠 High",              sc.get("high", 0))
     col5.metric("🟡 Medium",            sc.get("medium", 0))
-    col6.metric("⚠️ Scorecard Warn",    data.get("scorecard_warnings", 0))
+    col6.metric("🚨 In KEV",            data.get("kev_count", 0),
+                help="Vulnerabilities listed in CISA or VulnCheck KEV — actively exploited in the wild")
+
+    sc_col1, sc_col2 = st.columns(2)
+    sc_col1.metric("⚠️ Scorecard Warn", data.get("scorecard_warnings", 0))
+    sc_col2.metric("💥 Exploitable", data.get("exploitable_count", 0),
+                   help="Vulnerabilities with a KEV listing, a public PoC, or a Nuclei template")
 
     st.divider()
     total_vulns = sum(sc.values())
@@ -121,6 +185,42 @@ if page == "📊 Dashboard":
     else:
         st.success("No active vulnerabilities found.")
 
+    # ── CVE-PaaS priority breakdown ───────────────────────────────────────────
+    prio = data.get("priority_counts") or {}
+    total_prio = sum(prio.values())
+    if total_prio:
+        st.divider()
+        st.subheader("Exploitation priority (CVE-PaaS)")
+        st.caption("Priority combines CVSS, EPSS, KEV listings, public PoCs and Nuclei "
+                   "templates — it ranks what is actually exploited, not just what scores high.")
+        cols = st.columns(len(PRIORITY_COLOR))
+        for col, label in zip(cols, PRIORITY_COLOR):
+            count = prio.get(label, 0)
+            pct   = round(count / total_prio * 100)
+            col.metric(f"{PRIORITY_COLOR[label]} {label}", f"{count} ({pct}%)")
+    elif total_vulns:
+        st.divider()
+        st.info("No CVE-PaaS priorities yet — enable the integration in Settings, "
+                "then run **Prioritize** on a component or backfill from Settings.")
+
+    fixable = data.get("fixable_count")
+    if fixable:
+        st.divider()
+        st.subheader("Remediation")
+        rem_col1, rem_col2 = st.columns(2)
+        rem_col1.metric("🔧 Fixable now", fixable,
+                        help="Findings with a published fix version")
+        rem_col2.metric("🚧 No fix published", data.get("unfixable_count", 0))
+        upgrades = data.get("upgrades") or []
+        if upgrades:
+            st.caption("Components with the most findings cleared by a single upgrade:")
+            for up in upgrades:
+                st.markdown(
+                    f"- **{up['name']}** {up['version']} → **{up['recommended_version']}** "
+                    f"clears {up['clears']} finding(s)"
+                    + (f" · owner `{up['owner']}`" if up.get("owner") else "")
+                )
+
     st.divider()
     if data["top_vulnerable"]:
         st.subheader("Top 5 most vulnerable components")
@@ -128,6 +228,7 @@ if page == "📊 Dashboard":
             tags_str = " · " + " ".join(f"`{t.strip()}`" for t in item["tags"].split(",") if t.strip()) if item.get("tags") else ""
             st.markdown(
                 f"**{item['name']}** {item['version']}{tags_str} {scorecard_badge(item.get('scorecard_score'))} — "
+                f"{'🚨 ' + str(item['kev']) + ' KEV · ' if item.get('kev') else ''}"
                 f"🔴 {item['critical']} · 🟠 {item['high']} · **{item['vuln_count']} total**",
                 unsafe_allow_html=True,
             )
@@ -143,6 +244,8 @@ elif page == "➕ Add Component":
     name    = st.text_input("Name",    key="name")
     version = st.text_input("Version", key="version")
     tags_input = st.text_input("Tags (comma-separated)", placeholder="prod,db-server,k8s", key="tags_input")
+    owner_input = st.text_input("Owner", placeholder="platform-team", key="owner_input",
+                                help="Team or person accountable. Notification routes match on this.")
 
     ecosystem = None
     if component_type == "library":
@@ -187,6 +290,7 @@ elif page == "➕ Add Component":
                 try:
                     payload = dict(st.session_state.analysis_payload)
                     payload.update(notes=notes or None, tags=tags_input.strip() or None,
+                                   owner=owner_input.strip() or None,
                                    repo_url=repo_url.strip() or None, distrib_url=distrib_url.strip() or None)
                     r = api("post", "/components", json=payload); r.raise_for_status()
                     added = r.json()
@@ -213,7 +317,7 @@ elif page == "📋 Components":
     all_components = fetch_components()
 
     # ── Search + filter ───────────────────────────────────────────────────────
-    filter_col, tag_col, export_col = st.columns([2, 1, 1])
+    filter_col, tag_col, owner_col, export_col = st.columns([2, 1, 1, 1])
     with filter_col:
         search = st.text_input("🔍 Search by name", placeholder="nginx, spring…", label_visibility="collapsed")
     with tag_col:
@@ -223,6 +327,12 @@ elif page == "📋 Components":
         if all_tags:
             sel = st.selectbox("Tag", ["All"] + all_tags, label_visibility="collapsed")
             selected_tag = None if sel == "All" else sel
+    with owner_col:
+        all_owners = sorted({c["owner"].strip() for c in all_components if c.get("owner")})
+        selected_owner = None
+        if all_owners:
+            sel_owner = st.selectbox("Owner", ["All owners"] + all_owners, label_visibility="collapsed")
+            selected_owner = None if sel_owner == "All owners" else sel_owner
     with export_col:
         csv_data = build_csv(all_components)
         st.download_button("⬇️ Export CSV", csv_data, "components.csv", "text/csv", use_container_width=True)
@@ -234,6 +344,8 @@ elif page == "📋 Components":
     if selected_tag:
         components = [c for c in components if c.get("tags") and
                       selected_tag in [t.strip() for t in c["tags"].split(",")]]
+    if selected_owner:
+        components = [c for c in components if (c.get("owner") or "").strip() == selected_owner]
 
     if not components:
         st.info("No components match your filters."); st.stop()
@@ -245,7 +357,7 @@ elif page == "📋 Components":
     if page_key not in st.session_state:
         st.session_state[page_key] = 0
     # Reset page when filters change
-    filter_sig = f"{search}|{selected_tag}"
+    filter_sig = f"{search}|{selected_tag}|{selected_owner}"
     if st.session_state.get("filter_sig") != filter_sig:
         st.session_state[page_key] = 0
         st.session_state["filter_sig"] = filter_sig
@@ -269,8 +381,10 @@ elif page == "📋 Components":
         cid = component["id"]
         non_fp = [v for v in component["vulnerabilities"] if not v.get("is_false_positive")]
 
-        if any(v["severity"] == "critical" for v in non_fp):   sev_icon = "🔴 "
-        elif any(v["severity"] == "high" for v in non_fp):     sev_icon = "🟠 "
+        # A KEV listing outranks any CVSS severity — it means "exploited today".
+        if any(v.get("is_kev") for v in non_fp):                sev_icon = "🚨 "
+        elif any(v["severity"] == "critical" for v in non_fp):  sev_icon = "🔴 "
+        elif any(v["severity"] == "high" for v in non_fp):      sev_icon = "🟠 "
         elif non_fp:                                            sev_icon = "⚠️ "
         else:                                                   sev_icon = ""
 
@@ -287,6 +401,7 @@ elif page == "📋 Components":
                 st.text(f"Type: {component['type']}")
                 st.text(f"Identifier: {component['identifier']}")
                 st.text(f"Last Updated: {fmt_dt(component['last_updated'])}")
+                if component.get("owner"):       st.text(f"Owner: {component['owner']}")
                 if component.get("ecosystem"):   st.text(f"Ecosystem: {component['ecosystem']}")
                 if component.get("repo_url"):    st.markdown(f"**Repo:** [{component['repo_url']}]({component['repo_url']})")
                 if component.get("distrib_url"): st.markdown(f"**Distrib:** [{component['distrib_url']}]({component['distrib_url']})")
@@ -331,6 +446,8 @@ elif page == "📋 Components":
                 st.subheader("✏️ Edit")
                 new_notes  = st.text_area("Notes",      value=component.get("notes") or "",       key=f"en_{cid}")
                 new_tags   = st.text_input("Tags",       value=component.get("tags") or "",         key=f"et_{cid}")
+                new_owner  = st.text_input("Owner",      value=component.get("owner") or "",        key=f"eo_{cid}",
+                                           help="Team or person accountable. Notification routes match on this.")
                 new_repo   = st.text_input("Repo URL",   value=component.get("repo_url") or "",     key=f"er_{cid}")
                 new_distrib= st.text_input("Distrib URL",value=component.get("distrib_url") or "",  key=f"ed_{cid}")
                 s_col, c_col = st.columns(2)
@@ -339,6 +456,7 @@ elif page == "📋 Components":
                         try:
                             api("patch", f"/components/{cid}", json={
                                 "notes": new_notes or None, "tags": new_tags.strip() or None,
+                                "owner": new_owner.strip() or None,
                                 "repo_url": new_repo.strip() or None, "distrib_url": new_distrib.strip() or None,
                             }).raise_for_status()
                             st.success("Saved."); st.session_state[edit_key] = False; st.rerun()
@@ -350,9 +468,39 @@ elif page == "📋 Components":
                 st.divider()
 
             # ── Vulnerabilities ───────────────────────────────────────────────
-            st.markdown("**Vulnerabilities**")
+            rem = component.get("remediation")
+            if rem:
+                clears, total = rem["clears"], rem["total"]
+                st.success(
+                    f"⬆️ **Upgrade to {rem['recommended_version']}** — clears "
+                    f"{clears} of {total} finding(s)"
+                    + (f", {rem['unfixable']} have no published fix" if rem["unfixable"] else "")
+                )
+                # Intermediate stops matter when the full jump is blocked.
+                steps = [st_ for st_ in rem["steps"] if st_["version"] != rem["recommended_version"]]
+                if steps:
+                    with st.expander("Smaller upgrade steps"):
+                        for step in steps:
+                            st.markdown(f"- **{step['version']}** → clears {step['clears']} of {clears}")
+
+            vuln_head, enrich_col = st.columns([3, 1], vertical_alignment="center")
+            with vuln_head:
+                st.markdown("**Vulnerabilities**")
+            with enrich_col:
+                if component["vulnerabilities"] and st.button(
+                    "🎯 Prioritize (CVE-PaaS)", key=f"enrich_{cid}", use_container_width=True
+                ):
+                    with st.spinner("Querying CVE-PaaS…"):
+                        try:
+                            r = api("post", f"/components/{cid}/enrich"); r.raise_for_status()
+                            st.success(f"{r.json()['enriched']} CVE(s) prioritized."); st.rerun()
+                        except requests.HTTPError as e:
+                            st.error(f"Enrichment failed: {e.response.text}")
+                        except Exception as e:
+                            st.error(f"Enrichment failed: {e}")
+
             if component["vulnerabilities"]:
-                for vuln in component["vulnerabilities"]:
+                for vuln in sort_vulns(component["vulnerabilities"]):
                     vuln_id  = vuln.get("cve_id", "Unknown")
                     is_fp    = vuln.get("is_false_positive", False)
                     reason   = vuln.get("false_positive_reason") or ""
@@ -367,9 +515,20 @@ elif page == "📋 Components":
                     date_str  = f" <small style='color:gray'>since {first_s}</small>" if first_s != "—" else ""
                     label_html= f'<span style="color:{color};font-weight:bold;">{icon} {vuln_id} ({severity.upper()})</span>{cvss_str}{date_str}'
                     vuln_disp = f"<s>{label_html}</s>" if is_fp else f'<a href="{url}" target="_blank">{label_html}</a>'
+                    vuln_disp += priority_badge(vuln)
+                    if vuln.get("fixed_version") and not is_fp:
+                        vuln_disp += (f' <span style="color:#2e7d32;font-size:0.8em;">'
+                                      f'→ fixed in {vuln["fixed_version"]}</span>')
 
                     v_cols = st.columns([0.4, 0.1, 0.5], vertical_alignment="center")
-                    with v_cols[0]: st.markdown(vuln_disp, unsafe_allow_html=True)
+                    with v_cols[0]:
+                        st.markdown(vuln_disp, unsafe_allow_html=True)
+                        links = vuln.get("cvepaas_links") or {}
+                        link_md = " · ".join(
+                            f"[{label}]({href})" for label, href in links.items() if href
+                        )
+                        if link_md and not is_fp:
+                            st.markdown(f"<small>{link_md}</small>", unsafe_allow_html=True)
                     with v_cols[1]: new_fp = st.checkbox("FP", value=is_fp, key=f"fp_{cid}_{vuln_id}")
                     with v_cols[2]:
                         new_reason = st.text_input("Reason", value=reason, key=f"reason_{cid}_{vuln_id}",
@@ -562,6 +721,111 @@ elif page == "⚙️ Settings":
                                      value=int(current.get("stale_days_threshold", 730)))
 
     st.divider()
+    st.subheader("📬 Notification Routing")
+    st.caption("Send a component's alerts to the channel of whoever owns it. A component matching "
+               "no route falls back to the global webhook above, so adding routes never silently "
+               "drops alerts.")
+
+    existing_routes = current.get("notification_routes") or []
+    routes_text = st.text_area(
+        "Routes (JSON)",
+        value=json.dumps(existing_routes, indent=2) if existing_routes else "[]",
+        height=180,
+        help='Each entry: {"match": {"owner": "...", "tag": "..."}, "webhook_url": "..."}. '
+             'Both match keys are optional; when both are present they must both hold.',
+    )
+
+    routes_valid, routes_parsed = True, []
+    try:
+        routes_parsed = json.loads(routes_text or "[]")
+        if not isinstance(routes_parsed, list):
+            raise ValueError("must be a JSON array")
+        for entry in routes_parsed:
+            if not isinstance(entry, dict) or not entry.get("webhook_url") or not entry.get("match"):
+                raise ValueError("every route needs a `match` object and a `webhook_url`")
+            unknown = set(entry["match"]) - {"owner", "tag"}
+            if unknown:
+                raise ValueError(f"unknown match key(s): {sorted(unknown)} — use `owner` and/or `tag`")
+    except (ValueError, TypeError) as e:
+        routes_valid = False
+        st.error(f"Routes not saved — {e}")
+
+    if routes_valid and routes_parsed:
+        st.caption(f"✅ {len(routes_parsed)} route(s) configured.")
+
+    with st.expander("Example"):
+        st.code(json.dumps([
+            {"match": {"owner": "platform"}, "webhook_url": "https://hooks.slack.com/services/AAA"},
+            {"match": {"tag": "prod"}, "webhook_url": "https://hooks.slack.com/services/ONCALL"},
+            {"match": {"owner": "data", "tag": "db"}, "webhook_url": "https://hooks.slack.com/services/DATA"},
+        ], indent=2), language="json")
+        st.caption("Every matching route receives the alert, so a prod component owned by "
+                   "`platform` reaches both of the first two channels.")
+
+    st.divider()
+    st.subheader("🎯 CVE-PaaS Prioritization")
+    st.caption("Enrich stored CVEs with exploitation-aware priorities from a self-hosted "
+               "[CVE-PaaS](https://github.com/denimoll/CVE-PaaS) instance — EPSS, CISA/VulnCheck KEV, "
+               "public PoCs and Nuclei templates.")
+
+    cvepaas_enabled = st.toggle("Enable CVE-PaaS integration",
+                                value=current.get("cvepaas_enabled", False))
+    cvepaas_url = st.text_input("CVE-PaaS base URL", value=current.get("cvepaas_url") or "",
+                                placeholder="http://cve-paas:8000",
+                                disabled=not cvepaas_enabled)
+    st.caption("The CVE-PaaS API key (if the instance requires one) is read from the "
+               "`CVEPAAS_API_KEY` environment variable on the backend — it is never stored here.")
+
+    cp_col1, cp_col2 = st.columns(2)
+    with cp_col1:
+        notify_kev = st.toggle("Alert when a CVE is listed in KEV",
+                               value=current.get("notify_on_kev", True),
+                               disabled=not cvepaas_enabled,
+                               help="Fires regardless of CVSS severity — KEV means exploited in the wild.")
+        notify_prio_crit = st.toggle("Alert on CVE-PaaS priority Critical",
+                                     value=current.get("notify_on_priority_critical", False),
+                                     disabled=not cvepaas_enabled)
+    with cp_col2:
+        epss_threshold = st.number_input(
+            "EPSS alert threshold (0 = off)", min_value=0.0, max_value=1.0, step=0.05,
+            value=float(current.get("epss_alert_threshold", 0.0)),
+            disabled=not cvepaas_enabled,
+            help="Alert when a CVE's exploit-prediction score reaches this value. 0.2 ≈ top 2% of CVEs.",
+        )
+
+    cp_test_col, cp_fill_col, _ = st.columns([1, 1, 2])
+    with cp_test_col:
+        if st.button("🔌 Test connection", use_container_width=True, disabled=not cvepaas_enabled):
+            try:
+                r = api("post", "/settings/test-cvepaas")
+                if r.status_code == 200:
+                    st.success(r.json()["detail"])
+                else:
+                    st.error(r.json().get("detail", f"HTTP {r.status_code}"))
+            except Exception as e:
+                st.error(f"Test failed: {e}")
+    with cp_fill_col:
+        if st.button("🎯 Backfill priorities", use_container_width=True, disabled=not cvepaas_enabled,
+                     help="Look up every stored CVE that has no priority yet. Save settings first."):
+            with st.spinner("Querying CVE-PaaS — this can take a while for a large inventory…"):
+                try:
+                    r = api("post", "/vulnerabilities/enrich")
+                    if r.status_code == 200:
+                        st.success(f"{r.json()['enriched']} CVE(s) prioritized.")
+                    else:
+                        st.error(r.json().get("detail", f"HTTP {r.status_code}"))
+                except Exception as e:
+                    st.error(f"Backfill failed: {e}")
+
+    st.divider()
+    st.subheader("🌐 Vulnerability Sources")
+    st.info("**NVD** limits anonymous clients to 5 requests / 30 s, which a nightly refresh over a "
+            "few dozen products will exceed. Set the `NVD_API_KEY` environment variable on the "
+            "backend to raise it to 50 / 30 s — [request a free key]"
+            "(https://nvd.nist.gov/developers/request-an-api-key). Requests are paced and retried "
+            "with backoff either way; without a key the refresh is simply much slower.")
+
+    st.divider()
     st.subheader("🔐 API Authentication")
     st.info("Set the `OSS_MONITOR_API_KEY` environment variable to enable API key authentication. "
             "Pass the key via the `X-API-Key` header. If the variable is not set, auth is disabled.")
@@ -576,8 +840,15 @@ elif page == "⚙️ Settings":
                     "notify_on_critical": notify_critical, "notify_on_high": notify_high,
                     "scorecard_min_score": sc_min, "stale_days_threshold": stale_days,
                     "notify_on_scorecard_fail": notify_scorecard, "notify_on_stale": notify_stale,
+                    "cvepaas_enabled": cvepaas_enabled,
+                    "cvepaas_url": cvepaas_url.strip() or None,
+                    "notify_on_kev": notify_kev,
+                    "notify_on_priority_critical": notify_prio_crit,
+                    "epss_alert_threshold": epss_threshold,
+                    "notification_routes": routes_parsed if routes_valid else existing_routes,
                 }).raise_for_status()
-                st.success("Settings saved.")
+                st.success("Settings saved."
+                           + ("" if routes_valid else " Routes were left unchanged — fix the JSON above."))
             except Exception as e:
                 st.error(f"Save failed: {e}")
     with test_col:
