@@ -1,4 +1,4 @@
-FROM python:3.13.3-alpine3.20
+FROM python:3.14.7-alpine3.24
 
 # Create a dedicated non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
@@ -12,8 +12,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY backend/ .
 
-# Hand ownership to non-root user (covers future db_data volume mount point)
-RUN chown -R appuser:appgroup /app
+# Create the DB directory *inside the image* so a fresh named volume mounted
+# here inherits appuser ownership. Without this Docker creates the mount point
+# as root:root and the non-root process cannot write the SQLite file at all.
+RUN mkdir -p /app/db_data \
+ && chown -R appuser:appgroup /app
 
 USER appuser
 
